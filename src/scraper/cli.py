@@ -20,6 +20,9 @@ def main() -> None:
     sub.add_parser("init-db", help="create schema + tables")
     sub.add_parser("sync-stores", help="load the store directory from the sitemap")
 
+    p_dash = sub.add_parser("dashboard", help="serve the ingestion dashboard")
+    p_dash.add_argument("--port", type=int, default=8000)
+
     p_run = sub.add_parser("run", help="scrape product data from the sitemaps")
     p_run.add_argument("--limit", type=int, default=None, help="max products")
     p_run.add_argument("--max-sitemaps", type=int, default=None,
@@ -54,6 +57,10 @@ def main() -> None:
         from .pipeline import sync_stores
 
         print({"stores": sync_stores()})
+    elif args.cmd == "dashboard":
+        from .dashboard import serve
+
+        serve(args.port)
     elif args.cmd == "run":
         from .pipeline import run
 

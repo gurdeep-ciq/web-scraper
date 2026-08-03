@@ -1,0 +1,284 @@
+"""Local web dashboard for the scraped Total Wine data.
+
+Reads the Postgres `totalwine` schema and renders an at-a-glance view: headline
+counts, price coverage, category + rating breakdowns, recent scrape runs, and a
+sample of top-reviewed products. Pure stdlib http.server + SQLAlchemy (no extra
+deps); server-rendered with CSS bars so it works offline.
+
+    python -m scraper.cli dashboard          # http://localhost:8000
+    python -m scraper.cli dashboard --port 8080
+"""
+
+from __future__ import annotations
+
+import argparse
+import html
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+from sqlalchemy import text
+
+from .config import config
+from .db import engine
+
+S = config.db_schema
+
+
+def _scalar(conn, sql, default=0):
+    v = conn.execute(text(sql)).scalar()
+    return v if v is not None else default
+
+
+def gather() -> dict:
+    with engine.connect() as c:
+        d: dict = {}
+        d["products"] = _scalar(c, f"SELECT count(*) FROM {S}.product")
+        d["variants"] = _scalar(c, f"SELECT count(*) FROM {S}.product_variant")
+        d["reviews"] = _scalar(c, f"SELECT count(*) FROM {S}.review")
+        d["stores"] = _scalar(c, f"SELECT count(*) FROM {S}.store")
+        d["priced"] = _scalar(
+            c, f"SELECT count(*) FROM {S}.product_variant WHERE price IS NOT NULL")
+        d["avg_price"] = _scalar(
+            c, f"SELECT round(avg(price)::numeric,2) FROM {S}.product_variant WHERE price IS NOT NULL")
+        d["max_price"] = _scalar(
+            c, f"SELECT max(price) FROM {S}.product_variant WHERE price IS NOT NULL")
+        d["with_rating"] = _scalar(
+            c, f"SELECT count(*) FROM {S}.product WHERE review_count > 0")
+        d["categories"] = c.execute(text(
+            f"SELECT coalesce(category,'(none)'), count(*) n FROM {S}.product "
+            f"GROUP BY 1 ORDER BY n DESC LIMIT 12")).all()
+        d["ratings"] = c.execute(text(
+            f"SELECT floor(avg_rating)::int b, count(*) n FROM {S}.product "
+            f"WHERE avg_rating > 0 GROUP BY 1 ORDER BY 1")).all()
+        d["runs"] = c.execute(text(
+            f"SELECT id, started_at, finished_at, records_ingested, error_count, notes "
+            f"FROM {S}.scrape_run ORDER BY id DESC LIMIT 8")).all()
+        d["top"] = c.execute(text(
+            f"SELECT p.product_id, p.name, p.category, v.size, v.price, p.avg_rating, p.review_count "
+            f"FROM {S}.product p LEFT JOIN {S}.product_variant v USING(product_id) "
+            f"WHERE p.review_count > 0 ORDER BY p.review_count DESC LIMIT 15")).all()
+        d["latest_reviews"] = c.execute(text(
+            f"SELECT r.product_id, p.name, r.rating, r.title, r.body, r.author, r.review_date "
+            f"FROM {S}.review r JOIN {S}.product p USING(product_id) "
+            f"ORDER BY r.review_date DESC NULLS LAST LIMIT 12")).all()
+        return d
+
+
+def gather_product(pid: str) -> dict | None:
+    with engine.connect() as c:
+        prod = c.execute(text(
+            f"SELECT product_id, name, brand, category, subcategory, url, "
+            f"avg_rating, review_count, ai_review_summary FROM {S}.product "
+            f"WHERE product_id = :p"), {"p": pid}).mappings().first()
+        if not prod:
+            return None
+        variants = c.execute(text(
+            f"SELECT size, price, in_stock FROM {S}.product_variant WHERE product_id = :p "
+            f"ORDER BY price NULLS LAST"), {"p": pid}).all()
+        reviews = c.execute(text(
+            f"SELECT rating, title, body, author, review_date, helpful_count "
+            f"FROM {S}.review WHERE product_id = :p "
+            f"ORDER BY helpful_count DESC NULLS LAST"), {"p": pid}).all()
+        return {"product": prod, "variants": variants, "reviews": reviews}
+
+
+def _bar(label, n, total, color="#7c3aed"):
+    pct = (n / total * 100) if total else 0
+    return (
+        f'<div class="row"><div class="lbl">{html.escape(str(label))}</div>'
+        f'<div class="track"><div class="fill" style="width:{pct:.1f}%;background:{color}">'
+        f'</div></div><div class="val">{n}</div></div>'
+    )
+
+
+def _stars(rating) -> str:
+    try:
+        r = int(round(float(rating)))
+    except (TypeError, ValueError):
+        return ""
+    return '<span class="stars">' + "★" * r + "☆" * (5 - r) + "</span>"
+
+
+def _review_card(r, *, show_product=False) -> str:
+    head = ""
+    if show_product:
+        pid = getattr(r, "product_id", "")
+        head = (f'<a class="rp" href="/product?id={html.escape(str(pid))}">'
+                f'{html.escape(r.name or "")}</a>')
+    return (
+        f'<div class="rev">{head}'
+        f'<div class="rh">{_stars(r.rating)} '
+        f'<strong>{html.escape(r.title or "")}</strong> '
+        f'<span class="by">{html.escape(r.author or "anon")}'
+        f'{" · " + str(r.review_date)[:10] if getattr(r, "review_date", None) else ""}</span></div>'
+        f'<div class="rb">{html.escape((r.body or "")[:400])}</div></div>'
+    )
+
+
+def render(d: dict) -> str:
+    cov = (d["priced"] / d["variants"] * 100) if d["variants"] else 0
+    cat_max = max([n for _, n in d["categories"]], default=1)
+    rat_max = max([n for _, n in d["ratings"]], default=1)
+
+    cards = "".join(
+        f'<div class="card"><div class="num">{v}</div><div class="cap">{k}</div></div>'
+        for k, v in [
+            ("Products", d["products"]), ("Variants", d["variants"]),
+            ("Reviews", d["reviews"]), ("Stores", d["stores"]),
+            ("Priced %", f"{cov:.0f}%"), ("Avg price", f"${d['avg_price']}"),
+            ("With reviews", d["with_rating"]),
+        ]
+    )
+    cats = "".join(_bar(lbl, n, cat_max) for lbl, n in d["categories"])
+    rats = "".join(_bar(f"{b}★", n, rat_max, "#f59e0b") for b, n in d["ratings"])
+
+    runs = "".join(
+        f"<tr><td>{r.id}</td><td>{str(r.started_at)[:19]}</td>"
+        f"<td>{str(r.finished_at)[:19] if r.finished_at else '…'}</td>"
+        f"<td>{r.records_ingested}</td><td>{r.error_count}</td>"
+        f"<td>{html.escape(r.notes or '')}</td></tr>"
+        for r in d["runs"]
+    )
+    top = "".join(
+        f'<tr><td><a href="/product?id={html.escape(str(r.product_id))}">{html.escape(r.name or "")}</a></td>'
+        f"<td>{html.escape(r.category or '')}</td>"
+        f"<td>{html.escape(r.size or '')}</td>"
+        f"<td>{('$'+str(r.price)) if r.price is not None else '—'}</td>"
+        f"<td>{round(r.avg_rating,2) if r.avg_rating else ''}</td>"
+        f"<td>{r.review_count or 0}</td></tr>"
+        for r in d["top"]
+    )
+    latest = "".join(_review_card(r, show_product=True) for r in d["latest_reviews"]) \
+        or '<div class="sub">no reviews yet</div>'
+
+    return f"""<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="15">
+<title>Total Wine Scraper — Dashboard</title>
+<style>
+  * {{ box-sizing: border-box; }}
+  body {{ font-family: -apple-system, system-ui, sans-serif; margin:0; background:#0f0f14; color:#e7e7ea; }}
+  header {{ padding:20px 28px; border-bottom:1px solid #26262e; }}
+  h1 {{ font-size:18px; margin:0; }} .sub {{ color:#8a8a95; font-size:13px; margin-top:4px; }}
+  main {{ padding:24px 28px; max-width:1100px; margin:0 auto; }}
+  .cards {{ display:flex; flex-wrap:wrap; gap:14px; margin-bottom:28px; }}
+  .card {{ background:#17171f; border:1px solid #26262e; border-radius:12px; padding:16px 20px; min-width:120px; }}
+  .num {{ font-size:26px; font-weight:700; }} .cap {{ color:#8a8a95; font-size:12px; margin-top:2px; text-transform:uppercase; letter-spacing:.04em; }}
+  section {{ background:#17171f; border:1px solid #26262e; border-radius:12px; padding:18px 20px; margin-bottom:22px; }}
+  h2 {{ font-size:14px; margin:0 0 14px; color:#c7c7d0; text-transform:uppercase; letter-spacing:.05em; }}
+  .row {{ display:flex; align-items:center; gap:12px; margin:6px 0; }}
+  .lbl {{ width:190px; font-size:13px; color:#c7c7d0; }} .val {{ width:44px; text-align:right; font-variant-numeric:tabular-nums; font-size:13px; }}
+  .track {{ flex:1; background:#26262e; border-radius:6px; height:16px; overflow:hidden; }}
+  .fill {{ height:100%; border-radius:6px; }}
+  table {{ width:100%; border-collapse:collapse; font-size:13px; }}
+  th,td {{ text-align:left; padding:7px 10px; border-bottom:1px solid #26262e; }}
+  th {{ color:#8a8a95; font-weight:600; text-transform:uppercase; font-size:11px; letter-spacing:.04em; }}
+  td {{ font-variant-numeric:tabular-nums; }}
+  a {{ color:#a78bfa; text-decoration:none; }} a:hover {{ text-decoration:underline; }}
+  .rev {{ border-bottom:1px solid #26262e; padding:12px 0; }}
+  .rev:last-child {{ border-bottom:0; }}
+  .rp {{ display:block; font-weight:600; margin-bottom:4px; }}
+  .rh {{ font-size:13px; margin-bottom:4px; }} .stars {{ color:#f59e0b; letter-spacing:1px; }}
+  .by {{ color:#8a8a95; }} .rb {{ font-size:13px; color:#c7c7d0; line-height:1.5; }}
+  .back {{ font-size:13px; }}
+</style></head><body>
+<header><h1>\U0001f377 Total Wine Scraper — Ingestion Dashboard</h1>
+<div class="sub">schema <code>{S}</code> &middot; auto-refreshes every 15s</div></header>
+<main>
+  <div class="cards">{cards}</div>
+  <section><h2>Products by category</h2>{cats or '<div class="sub">no data yet</div>'}</section>
+  <section><h2>Rating distribution</h2>{rats or '<div class="sub">no ratings yet</div>'}</section>
+  <section><h2>Top-reviewed products <span class="sub">(click a name for its reviews)</span></h2>
+    <table><tr><th>name</th><th>category</th><th>size</th><th>price</th><th>rating</th><th>reviews</th></tr>{top}</table>
+  </section>
+  <section><h2>Latest reviews</h2>{latest}</section>
+  <section><h2>Recent scrape runs</h2>
+    <table><tr><th>#</th><th>started</th><th>finished</th><th>ingested</th><th>errors</th><th>notes</th></tr>{runs}</table>
+  </section>
+</main></body></html>"""
+
+
+def render_product(pv: dict) -> str:
+    p = pv["product"]
+    variants = "".join(
+        f"<tr><td>{html.escape(v.size or '')}</td>"
+        f"<td>{('$'+str(v.price)) if v.price is not None else '—'}</td>"
+        f"<td>{'in stock' if v.in_stock else ('out' if v.in_stock is False else '?')}</td></tr>"
+        for v in pv["variants"]
+    ) or "<tr><td colspan=3 class='sub'>no variants</td></tr>"
+    reviews = "".join(_review_card(r) for r in pv["reviews"]) \
+        or '<div class="sub">no reviews stored for this product</div>'
+    summ = (f'<section><h2>AI review summary</h2><div class="rb">'
+            f'{html.escape(p["ai_review_summary"])}</div></section>') if p["ai_review_summary"] else ""
+    src = (f'<a href="{html.escape(p["url"])}" target="_blank">view on totalwine.com ↗</a>'
+           if p["url"] else "")
+
+    return f"""<!doctype html><html><head><meta charset="utf-8">
+<title>{html.escape(p['name'] or 'product')} — reviews</title>
+<style>
+  body {{ font-family:-apple-system,system-ui,sans-serif; margin:0; background:#0f0f14; color:#e7e7ea; }}
+  header {{ padding:20px 28px; border-bottom:1px solid #26262e; }}
+  h1 {{ font-size:20px; margin:0 0 4px; }} .sub {{ color:#8a8a95; font-size:13px; }}
+  main {{ padding:24px 28px; max-width:820px; margin:0 auto; }}
+  section {{ background:#17171f; border:1px solid #26262e; border-radius:12px; padding:18px 20px; margin-bottom:22px; }}
+  h2 {{ font-size:14px; margin:0 0 14px; color:#c7c7d0; text-transform:uppercase; letter-spacing:.05em; }}
+  table {{ width:100%; border-collapse:collapse; font-size:13px; }}
+  th,td {{ text-align:left; padding:7px 10px; border-bottom:1px solid #26262e; }}
+  a {{ color:#a78bfa; text-decoration:none; }} a:hover {{ text-decoration:underline; }}
+  .stars {{ color:#f59e0b; letter-spacing:1px; }} .by {{ color:#8a8a95; }}
+  .rev {{ border-bottom:1px solid #26262e; padding:12px 0; }} .rev:last-child {{ border-bottom:0; }}
+  .rh {{ font-size:13px; margin-bottom:4px; }} .rb {{ font-size:13px; color:#c7c7d0; line-height:1.5; }}
+</style></head><body>
+<header>
+  <div class="back"><a href="/">← dashboard</a></div>
+  <h1>{html.escape(p['name'] or '')}</h1>
+  <div class="sub">{html.escape(p['brand'] or '')} &middot; {html.escape(p['category'] or '')}
+    {'/ ' + html.escape(p['subcategory']) if p['subcategory'] else ''} &middot;
+    {_stars(p['avg_rating'])} {p['avg_rating'] or ''} ({p['review_count'] or 0} reviews) &middot; {src}</div>
+</header>
+<main>
+  <section><h2>Sizes &amp; price</h2><table>
+    <tr><th>size</th><th>price</th><th>stock</th></tr>{variants}</table></section>
+  {summ}
+  <section><h2>Reviews ({len(pv['reviews'])})</h2>{reviews}</section>
+</main></body></html>"""
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):  # noqa: N802
+        from urllib.parse import urlparse, parse_qs
+
+        parsed = urlparse(self.path)
+        try:
+            if parsed.path in ("/", "/index.html"):
+                body = render(gather())
+            elif parsed.path == "/product":
+                pid = (parse_qs(parsed.query).get("id") or [""])[0]
+                pv = gather_product(pid)
+                body = render_product(pv) if pv else "<pre>product not found</pre>"
+            else:
+                self.send_error(404)
+                return
+        except Exception as e:  # noqa: BLE001
+            body = f"<pre>error: {html.escape(str(e))}</pre>"
+        data = body.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *a):  # silence per-request logging
+        pass
+
+
+def serve(port: int = 8000) -> None:
+    print(f"Dashboard on http://localhost:{port}  (Ctrl-C to stop)")
+    HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--port", type=int, default=8000)
+    serve(ap.parse_args().port)
+
+
+if __name__ == "__main__":
+    main()
