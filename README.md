@@ -50,6 +50,24 @@ Run **headed** (a Chrome window opens). The first product may show a
 (`spike_out/px_profile_stealth`) keeps the session warm afterwards. On a
 headless server use `xvfb-run` rather than headless mode (PX blocks headless).
 
+### Resilience & speed
+
+- **Resumable**: a re-run skips products already in the DB and retries anything
+  that was blocked, so you can stop/crash and just run `run` again to continue.
+  (`--no-resume` to force a full re-scrape.)
+- **Auto re-warm**: on a PerimeterX block the session reloads the homepage to
+  refresh the PX token and retries, backing off on repeated blocks.
+- **Fast by default**: event-driven capture + image/CSS/font blocking → ~1.3s
+  per product. Tune with `--max-wait-ms`, `--delay-s`, `--no-block`.
+- **Scale = distinct IPs** (PerimeterX gates concurrency per IP). One worker per
+  IP:
+  ```bash
+  python -m scraper.cli run-parallel --limit 5000 \
+      --proxies http://ip1:port http://ip2:port http://ip3:port
+  ```
+  This is the local stand-in for the EC2 fleet. Multiple workers on ONE IP just
+  trigger PX challenges, so default is a single worker.
+
 Inspect results:
 ```sql
 SELECT category, count(*) FROM totalwine.product GROUP BY 1 ORDER BY 2 DESC;

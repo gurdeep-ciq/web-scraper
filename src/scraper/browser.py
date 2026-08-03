@@ -24,9 +24,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from .config import config
-
 DEFAULT_PROFILE = Path("spike_out/px_profile_stealth")
+HOMEPAGE = "https://www.totalwine.com/"
 
 
 class PXBlocked(Exception):
@@ -34,18 +33,30 @@ class PXBlocked(Exception):
 
 
 class TotalWineSession:
+    # Resource types we never need (we only want the JSON XHRs). Blocking these
+    # roughly halves page-load time and bandwidth.
+    _BLOCK_TYPES = {"image", "media", "font", "stylesheet"}
+
     def __init__(
         self,
         *,
         profile_dir: Path | str = DEFAULT_PROFILE,
         channel: str = "chrome",
         headless: bool = False,
-        settle_ms: int = 6000,
+        max_wait_ms: int = 10000,
+        capture_grace_ms: int = 700,
+        delay_s: float = 0.0,
+        block_resources: bool = True,
+        proxy: str | None = None,
     ) -> None:
         self.profile_dir = Path(profile_dir)
         self.channel = channel
         self.headless = headless
-        self.settle_ms = settle_ms
+        self.proxy = proxy
+        self.max_wait_ms = max_wait_ms          # max wait for getProduct to fire
+        self.capture_grace_ms = capture_grace_ms  # extra wait for reviews/summary
+        self.delay_s = delay_s                   # polite pacing between products
+        self.block_resources = block_resources
         self._pw = None
         self._ctx = None
         self._page = None
@@ -57,15 +68,31 @@ class TotalWineSession:
 
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self._pw = sync_playwright().start()
-        self._ctx = self._pw.chromium.launch_persistent_context(
+        launch_kwargs: dict = dict(
             user_data_dir=str(self.profile_dir),
             channel=self.channel,
             headless=self.headless,
             no_viewport=True,
         )
+        if self.proxy:
+            launch_kwargs["proxy"] = {"server": self.proxy}
+        self._ctx = self._pw.chromium.launch_persistent_context(**launch_kwargs)
+        if self.block_resources:
+            self._ctx.route("**/*", self._route)
         self._page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
         self._page.on("response", self._on_response)
         return self
+
+    def _route(self, route) -> None:
+        try:
+            if route.request.resource_type in self._BLOCK_TYPES:
+                return route.abort()
+            return route.continue_()
+        except Exception:
+            try:
+                return route.continue_()
+            except Exception:
+                return None
 
     def __exit__(self, *exc) -> None:
         try:
@@ -74,6 +101,22 @@ class TotalWineSession:
         finally:
             if self._pw:
                 self._pw.stop()
+
+    # -- store selection ---------------------------------------------------- #
+    def set_store(self, twm_cookie: str) -> None:
+        """Override the store/method by rewriting the twm-userStoreInformation
+        cookie, e.g. "ispStore~303:ifcStore~306@ifcStoreState~US-NJ@method~INSTORE_PICKUP".
+        """
+        try:
+            self._ctx.clear_cookies(name="twm-userStoreInformation")
+        except Exception:
+            pass
+        self._ctx.add_cookies([
+            {"name": "twm-userStoreInformation", "value": twm_cookie,
+             "domain": "www.totalwine.com", "path": "/"},
+            {"name": "overrideStore", "value": "true",
+             "domain": "www.totalwine.com", "path": "/"},
+        ])
 
     # -- interception ------------------------------------------------------- #
     def _on_response(self, resp) -> None:
@@ -91,25 +134,50 @@ class TotalWineSession:
             pass
 
     # -- fetch -------------------------------------------------------------- #
+    def _wait_for(self, key: str, timeout_ms: int, poll_ms: int = 200) -> bool:
+        """Poll until `key` is captured or the timeout elapses."""
+        waited = 0
+        while key not in self._cap and waited < timeout_ms:
+            self._page.wait_for_timeout(poll_ms)
+            waited += poll_ms
+        return key in self._cap
+
+    def rewarm(self, wait_ms: int = 6000) -> bool:
+        """Recover a cold/blocked session: reload the homepage and let the PX
+        sensor re-run (patchright usually clears the invisible challenge).
+        Returns True if the homepage came back un-blocked.
+        """
+        try:
+            self._page.goto(HOMEPAGE, wait_until="commit", timeout=60_000)
+            self._page.wait_for_timeout(wait_ms)
+            html = self._page.content()
+            return '"appId": "PXFF0j69T5"' not in html and "Press & Hold" not in html
+        except Exception:
+            return False
+
     def fetch(self, url: str, *, retries: int = 1) -> dict:
         """Navigate to a product page and return the intercepted JSON payloads.
 
-        Raises PXBlocked if getProduct never arrives (page stayed on a PX
-        challenge). Caller decides whether to solve interactively or skip.
+        Event-driven: returns as soon as getProduct is captured (typically
+        1-2s), then a short grace window to catch reviews/summary. Raises
+        PXBlocked if getProduct never arrives within max_wait_ms.
         """
         for attempt in range(retries + 1):
             self._cap = {}
-            self._page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-            self._page.wait_for_timeout(self.settle_ms)
-            if "product" in self._cap:
+            self._page.goto(url, wait_until="commit", timeout=60_000)
+            if self._wait_for("product", self.max_wait_ms):
                 break
             if attempt < retries:
-                self._page.wait_for_timeout(3000)
+                self._page.wait_for_timeout(2000)
         if "product" not in self._cap:
             raise PXBlocked(url)
 
-        # polite pacing between products
-        time.sleep(config.request_delay_seconds)
+        # brief grace so reviews + summary (fired slightly after) are captured.
+        # summary is usually empty, so we don't wait extra for it on its own.
+        self._wait_for("reviews", self.capture_grace_ms)
+
+        if self.delay_s:
+            time.sleep(self.delay_s)
         return {
             "product": self._cap.get("product"),
             "reviews": self._cap.get("reviews"),

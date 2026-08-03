@@ -24,8 +24,24 @@ def main() -> None:
     p_run.add_argument("--limit", type=int, default=None, help="max products")
     p_run.add_argument("--max-sitemaps", type=int, default=None,
                        help="cap number of product sitemaps scanned")
-    p_run.add_argument("--settle-ms", type=int, default=6000,
-                       help="ms to wait per page for XHRs to fire")
+    p_run.add_argument("--max-wait-ms", type=int, default=12000,
+                       help="max ms to wait for getProduct before giving up on a page")
+    p_run.add_argument("--delay-s", type=float, default=0.0,
+                       help="polite pause between products (0 = fastest)")
+    p_run.add_argument("--no-block", action="store_true",
+                       help="do not block images/css/fonts (slower)")
+    p_run.add_argument("--no-resume", action="store_true",
+                       help="do not skip products already in the DB")
+
+    p_par = sub.add_parser("run-parallel",
+                           help="scrape with N browser workers (needs 1 proxy/IP each)")
+    p_par.add_argument("--limit", type=int, default=None, help="max products (total)")
+    p_par.add_argument("--workers", type=int, default=1,
+                       help="concurrent browsers (use 1 without proxies; PX gates by IP)")
+    p_par.add_argument("--proxies", nargs="*", default=None,
+                       help="one proxy URL per worker, e.g. http://user:pass@ip:port ...")
+    p_par.add_argument("--delay-s", type=float, default=0.0,
+                       help="per-worker pause between products")
 
     args = ap.parse_args()
 
@@ -41,7 +57,14 @@ def main() -> None:
     elif args.cmd == "run":
         from .pipeline import run
 
-        print(run(limit=args.limit, max_sitemaps=args.max_sitemaps, settle_ms=args.settle_ms))
+        print(run(limit=args.limit, max_sitemaps=args.max_sitemaps,
+                  max_wait_ms=args.max_wait_ms, delay_s=args.delay_s,
+                  block_resources=not args.no_block, resume=not args.no_resume))
+    elif args.cmd == "run-parallel":
+        from .parallel import run_parallel
+
+        print(run_parallel(limit=args.limit, workers=args.workers,
+                           delay_s=args.delay_s, proxies=args.proxies))
 
 
 if __name__ == "__main__":

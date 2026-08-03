@@ -34,11 +34,21 @@ def _category_of(categories: list[dict], type_: str) -> str | None:
 
 
 def _size(product: dict) -> str | None:
-    for sku in product.get("skus", []):
-        for opt in sku.get("options", []):
+    # packageDescription is the authoritative page-level descriptor tied to the
+    # priced skuId (e.g. "750ml Bottle", and for beer it includes the pack
+    # count). Prefer it. Fall back to the SIZE option of the MATCHING sku — not
+    # skus[0], which for multi-SKU products can pair a wrong size with the price.
+    pkg = product.get("packageDescription")
+    if pkg:
+        return pkg
+    page_sku = product.get("skuId")
+    skus = product.get("skus", [])
+    match = next((s for s in skus if s.get("skuId") == page_sku), None)
+    for sku in ([match] if match else skus):
+        for opt in (sku or {}).get("options", []):
             if opt.get("type") == "SIZE":
                 return opt.get("value")
-    return product.get("packageDescription")
+    return None
 
 
 def _first_price(product: dict) -> float | None:

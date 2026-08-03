@@ -47,6 +47,12 @@ def session_scope() -> Iterator[Session]:
         session.close()
 
 
+def existing_product_ids() -> set[str]:
+    """All product_ids already in the DB — used to resume/skip on re-run."""
+    with SessionLocal() as session:
+        return {row[0] for row in session.query(Product.product_id).all()}
+
+
 def upsert_products(session: Session, rows: list[dict]) -> int:
     """Upsert products on product_id; refresh mutable fields + last_seen."""
     if not rows:
