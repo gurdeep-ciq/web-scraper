@@ -52,10 +52,16 @@ def gather() -> dict:
         d["runs"] = c.execute(text(
             f"SELECT id, started_at, finished_at, records_ingested, error_count, notes "
             f"FROM {S}.scrape_run ORDER BY id DESC LIMIT 8")).all()
+        # Order by ACTUAL stored review rows (not the site's count) so every
+        # listed product has reviews to show when clicked.
         d["top"] = c.execute(text(
-            f"SELECT p.product_id, p.name, p.category, v.size, v.price, p.avg_rating, p.review_count "
-            f"FROM {S}.product p LEFT JOIN {S}.product_variant v USING(product_id) "
-            f"WHERE p.review_count > 0 ORDER BY p.review_count DESC LIMIT 15")).all()
+            f"SELECT p.product_id, p.name, p.category, v.size, v.price, p.avg_rating, "
+            f"       count(r.*) AS review_count "
+            f"FROM {S}.product p "
+            f"LEFT JOIN {S}.product_variant v USING(product_id) "
+            f"JOIN {S}.review r ON r.product_id = p.product_id "
+            f"GROUP BY p.product_id, p.name, p.category, v.size, v.price, p.avg_rating "
+            f"ORDER BY review_count DESC LIMIT 15")).all()
         d["latest_reviews"] = c.execute(text(
             f"SELECT r.product_id, p.name, r.rating, r.title, r.body, r.author, r.review_date "
             f"FROM {S}.review r JOIN {S}.product p USING(product_id) "

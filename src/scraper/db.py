@@ -93,7 +93,7 @@ def upsert_reviews(session: Session, rows: list[dict]) -> int:
     if not rows:
         return 0
     stmt = pg_insert(Review).values(rows).on_conflict_do_nothing(
-        index_elements=["review_id"]
+        index_elements=["review_id", "product_id"]
     )
     session.execute(stmt)
     return len(rows)

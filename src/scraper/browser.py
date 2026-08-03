@@ -21,6 +21,7 @@ a virtual display (xvfb-run) rather than headless=True.
 
 from __future__ import annotations
 
+import random
 import time
 from pathlib import Path
 
@@ -44,15 +45,19 @@ class TotalWineSession:
         channel: str = "chrome",
         headless: bool = False,
         max_wait_ms: int = 10000,
-        capture_grace_ms: int = 700,
+        capture_grace_ms: int = 3000,
         delay_s: float = 0.0,
         block_resources: bool = True,
         proxy: str | None = None,
+        human: bool = True,
+        rewarm_ms: int = 8000,
     ) -> None:
         self.profile_dir = Path(profile_dir)
         self.channel = channel
         self.headless = headless
         self.proxy = proxy
+        self.human = human            # small mouse/scroll to look less robotic
+        self.rewarm_ms = rewarm_ms    # settle time on a recovery homepage load
         self.max_wait_ms = max_wait_ms          # max wait for getProduct to fire
         self.capture_grace_ms = capture_grace_ms  # extra wait for reviews/summary
         self.delay_s = delay_s                   # polite pacing between products
@@ -142,14 +147,27 @@ class TotalWineSession:
             waited += poll_ms
         return key in self._cap
 
-    def rewarm(self, wait_ms: int = 6000) -> bool:
-        """Recover a cold/blocked session: reload the homepage and let the PX
-        sensor re-run (patchright usually clears the invisible challenge).
-        Returns True if the homepage came back un-blocked.
-        """
+    def _fidget(self) -> None:
+        """A little human-like motion so the behavioural score stays low."""
+        if not self.human:
+            return
         try:
-            self._page.goto(HOMEPAGE, wait_until="commit", timeout=60_000)
+            self._page.mouse.move(random.randint(120, 900), random.randint(120, 600))
+            self._page.wait_for_timeout(random.randint(150, 500))
+            self._page.mouse.wheel(0, random.randint(400, 1100))
+        except Exception:
+            pass
+
+    def rewarm(self, wait_ms: int | None = None) -> bool:
+        """Recover a cold/blocked session: browse the homepage like a human and
+        let the PX sensor re-run (patchright usually clears the invisible
+        challenge). Returns True if the homepage came back un-blocked.
+        """
+        wait_ms = self.rewarm_ms if wait_ms is None else wait_ms
+        try:
+            self._page.goto(HOMEPAGE, wait_until="domcontentloaded", timeout=60_000)
             self._page.wait_for_timeout(wait_ms)
+            self._fidget()
             html = self._page.content()
             return '"appId": "PXFF0j69T5"' not in html and "Press & Hold" not in html
         except Exception:
@@ -165,6 +183,7 @@ class TotalWineSession:
         for attempt in range(retries + 1):
             self._cap = {}
             self._page.goto(url, wait_until="commit", timeout=60_000)
+            self._fidget()
             if self._wait_for("product", self.max_wait_ms):
                 break
             if attempt < retries:
@@ -172,9 +191,15 @@ class TotalWineSession:
         if "product" not in self._cap:
             raise PXBlocked(url)
 
-        # brief grace so reviews + summary (fired slightly after) are captured.
-        # summary is usually empty, so we don't wait extra for it on its own.
-        self._wait_for("reviews", self.capture_grace_ms)
+        # Reviews often load lazily when the reviews section scrolls into view,
+        # so nudge the page down to trigger that XHR, then wait for it.
+        if "reviews" not in self._cap:
+            try:
+                self._page.evaluate(
+                    "window.scrollTo(0, document.body.scrollHeight * 0.75)")
+            except Exception:
+                pass
+            self._wait_for("reviews", self.capture_grace_ms)
 
         if self.delay_s:
             time.sleep(self.delay_s)

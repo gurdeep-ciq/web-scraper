@@ -85,8 +85,12 @@ class ProductVariant(Base):
 class Review(Base):
     __tablename__ = "review"
 
+    # Composite PK: the same review is shared across a product family (all SKUs
+    # of one product return the same review ids), so key on both to let each
+    # product row keep its own copy.
     review_id: Mapped[str] = mapped_column(String, primary_key=True)
-    product_id: Mapped[str] = mapped_column(ForeignKey("product.product_id"))
+    product_id: Mapped[str] = mapped_column(
+        ForeignKey("product.product_id"), primary_key=True)
     rating: Mapped[float | None] = mapped_column(Float)
     title: Mapped[str | None] = mapped_column(String)
     body: Mapped[str | None] = mapped_column(Text)

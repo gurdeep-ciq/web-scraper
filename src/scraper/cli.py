@@ -23,16 +23,21 @@ def main() -> None:
     p_dash = sub.add_parser("dashboard", help="serve the ingestion dashboard")
     p_dash.add_argument("--port", type=int, default=8000)
 
+    p_bf = sub.add_parser("backfill-reviews",
+                          help="re-fetch products that have a review count but no stored reviews")
+    p_bf.add_argument("--limit", type=int, default=None)
+    p_bf.add_argument("--delay-s", type=float, default=1.0)
+
     p_run = sub.add_parser("run", help="scrape product data from the sitemaps")
     p_run.add_argument("--limit", type=int, default=None, help="max products")
     p_run.add_argument("--max-sitemaps", type=int, default=None,
                        help="cap number of product sitemaps scanned")
-    p_run.add_argument("--max-wait-ms", type=int, default=12000,
+    p_run.add_argument("--max-wait-ms", type=int, default=10000,
                        help="max ms to wait for getProduct before giving up on a page")
-    p_run.add_argument("--delay-s", type=float, default=0.0,
-                       help="polite pause between products (0 = fastest)")
-    p_run.add_argument("--no-block", action="store_true",
-                       help="do not block images/css/fonts (slower)")
+    p_run.add_argument("--delay-s", type=float, default=1.0,
+                       help="base polite pause between products (adaptive; ramps up on blocks)")
+    p_run.add_argument("--fast", action="store_true",
+                       help="max speed: no pacing + block images/css/fonts (higher PX-block risk)")
     p_run.add_argument("--no-resume", action="store_true",
                        help="do not skip products already in the DB")
 
@@ -61,12 +66,18 @@ def main() -> None:
         from .dashboard import serve
 
         serve(args.port)
+    elif args.cmd == "backfill-reviews":
+        from .pipeline import backfill_reviews
+
+        print(backfill_reviews(limit=args.limit, delay_s=args.delay_s))
     elif args.cmd == "run":
         from .pipeline import run
 
         print(run(limit=args.limit, max_sitemaps=args.max_sitemaps,
-                  max_wait_ms=args.max_wait_ms, delay_s=args.delay_s,
-                  block_resources=not args.no_block, resume=not args.no_resume))
+                  max_wait_ms=args.max_wait_ms,
+                  delay_s=0.0 if args.fast else args.delay_s,
+                  block_resources=args.fast,
+                  resume=not args.no_resume))
     elif args.cmd == "run-parallel":
         from .parallel import run_parallel
 

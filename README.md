@@ -55,10 +55,16 @@ headless server use `xvfb-run` rather than headless mode (PX blocks headless).
 - **Resumable**: a re-run skips products already in the DB and retries anything
   that was blocked, so you can stop/crash and just run `run` again to continue.
   (`--no-resume` to force a full re-scrape.)
-- **Auto re-warm**: on a PerimeterX block the session reloads the homepage to
-  refresh the PX token and retries, backing off on repeated blocks.
-- **Fast by default**: event-driven capture + image/CSS/font blocking → ~1.3s
-  per product. Tune with `--max-wait-ms`, `--delay-s`, `--no-block`.
+- **PerimeterX-friendly by default**: a 1s jittered base pace, human-like
+  mouse/scroll, and resources NOT blocked (real browsers load assets). On a
+  block the session backs off, re-warms (human-like homepage browse), and an
+  **adaptive throttle** ramps the pace up and keeps it elevated until PX cools
+  off — this is what prevents the "Press & Hold every 1-2 items" loop on long
+  runs. If PX still loops, the IP is flagged: pause ~15-30 min, or scale via
+  distinct IPs (below).
+- **`--fast`**: max speed (no pacing + block images/css/fonts, ~1.3s/product)
+  for small test runs where PX-block risk doesn't matter. Also `--max-wait-ms`,
+  `--delay-s` to tune.
 - **Scale = distinct IPs** (PerimeterX gates concurrency per IP). One worker per
   IP:
   ```bash
