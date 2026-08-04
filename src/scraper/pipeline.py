@@ -132,6 +132,30 @@ def _fetch_with_rewarm(sess, url: str, thr: "_Throttle") -> dict | None:
         return None
 
 
+def _fetch_patient(sess, url: str, thr: "_Throttle",
+                   pause_seconds: float, block_pauses: int) -> dict | None:
+    """Fetch with patient recovery: after the quick re-warm fails, take
+    escalating multi-minute pauses to let PerimeterX's per-IP score decay, then
+    retry the SAME url. This is what makes a single-IP run hands-off — instead
+    of skipping a blocked product (or needing a manual Press & Hold), it waits
+    the challenge out. Gives up on the url only after `block_pauses` long waits.
+    """
+    data = _fetch_with_rewarm(sess, url, thr)
+    pauses = 0
+    while data is None and pauses < block_pauses:
+        pauses += 1
+        wait = pause_seconds * pauses
+        log.warning("still blocked — patient cooldown %.0fs (%d/%d) to let PX decay",
+                    wait, pauses, block_pauses)
+        time.sleep(wait)
+        sess.rewarm()
+        try:
+            data = sess.fetch(url)
+        except PXBlocked:
+            data = None
+    return data
+
+
 def backfill_reviews(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
                      delay_s: float = 1.0) -> dict:
     """Re-fetch products that have a review count but no stored reviews.
@@ -189,6 +213,7 @@ def backfill_reviews(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
 def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
         max_sitemaps: int | None = None, max_wait_ms: int = 10000,
         delay_s: float = 1.0, block_resources: bool = False, resume: bool = True,
+        pause_every: int = 0, pause_seconds: float = 180.0, block_pauses: int = 0,
         log_every: int = 25) -> dict:
     """Scrape product data for up to `limit` products from the sitemaps.
 
@@ -200,6 +225,11 @@ def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
     pace (with jitter), resources NOT blocked (real browsers load assets), and
     adaptive throttling that ramps up after blocks. For a quick small test you
     can pass delay_s=0 / block_resources=True to go faster.
+
+    Patient mode (for an unattended single-IP grind): `pause_every` products,
+    take a `pause_seconds` break so the PX score decays before it escalates to
+    Press & Hold; `block_pauses` gives blocked products escalating multi-minute
+    retries instead of skipping. This trades speed for not needing a human.
     """
     ingested = skipped = errors = blocked = 0
     thr = _Throttle(base=delay_s)
@@ -225,7 +255,7 @@ def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
                     continue
 
                 try:
-                    data = _fetch_with_rewarm(sess, url, thr)
+                    data = _fetch_patient(sess, url, thr, pause_seconds, block_pauses)
                 except Exception as e:  # noqa: BLE001
                     errors += 1
                     log.warning("fetch/parse error %s: %s", url, e)
@@ -246,6 +276,13 @@ def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
                 if ingested and ingested % log_every == 0:
                     log.info("ingested=%d skipped=%d errors=%d blocked=%d penalty=%.1fs",
                              ingested, skipped, errors, blocked, thr.penalty)
+
+                # Patient mode: periodic proactive break so PX's score decays
+                # before it escalates to a Press & Hold.
+                if pause_every and ingested and ingested % pause_every == 0:
+                    log.info("patient pause: %.0fs after %d products (let PX cool off)",
+                             pause_seconds, ingested)
+                    time.sleep(pause_seconds)
                 thr.pace()
     finally:
         with session_scope() as session:

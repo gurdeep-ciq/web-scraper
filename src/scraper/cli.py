@@ -45,6 +45,13 @@ def main() -> None:
                        help="max speed: no pacing + block images/css/fonts (higher PX-block risk)")
     p_run.add_argument("--no-resume", action="store_true",
                        help="do not skip products already in the DB")
+    p_run.add_argument("--patient", action="store_true",
+                       help="unattended single-IP mode: slow pace + periodic breaks + "
+                            "long block-recovery pauses so PerimeterX doesn't need a manual solve")
+    p_run.add_argument("--pause-every", type=int, default=None,
+                       help="take a break every N products (default 60 with --patient)")
+    p_run.add_argument("--pause-seconds", type=float, default=None,
+                       help="length of each break in seconds (default 240 with --patient)")
 
     p_par = sub.add_parser("run-parallel",
                            help="scrape with N browser workers (needs 1 proxy/IP each)")
@@ -78,11 +85,26 @@ def main() -> None:
     elif args.cmd == "run":
         from .pipeline import run
 
+        # Patient mode: slower pace, periodic breaks, and long block-recovery
+        # pauses so a single-IP run stays hands-off. Individual flags override.
+        delay = 0.0 if args.fast else args.delay_s
+        pause_every = pause_seconds = 0
+        block_pauses = 0
+        if args.patient:
+            delay = max(delay, 2.0)
+            pause_every = args.pause_every if args.pause_every is not None else 60
+            pause_seconds = args.pause_seconds if args.pause_seconds is not None else 240.0
+            block_pauses = 4
+        else:
+            pause_every = args.pause_every or 0
+            pause_seconds = args.pause_seconds or 180.0
+
         print(run(source=args.source, limit=args.limit, max_sitemaps=args.max_sitemaps,
                   max_wait_ms=args.max_wait_ms,
-                  delay_s=0.0 if args.fast else args.delay_s,
-                  block_resources=args.fast,
-                  resume=not args.no_resume))
+                  delay_s=delay, block_resources=args.fast,
+                  resume=not args.no_resume,
+                  pause_every=pause_every, pause_seconds=pause_seconds,
+                  block_pauses=block_pauses))
     elif args.cmd == "run-parallel":
         from .parallel import run_parallel
 
