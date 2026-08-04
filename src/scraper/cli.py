@@ -18,17 +18,22 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("init-db", help="create schema + tables")
-    sub.add_parser("sync-stores", help="load the store directory from the sitemap")
+
+    p_ss = sub.add_parser("sync-stores", help="load the store directory from the sitemap")
+    p_ss.add_argument("--source", default="totalwine")
 
     p_dash = sub.add_parser("dashboard", help="serve the ingestion dashboard")
     p_dash.add_argument("--port", type=int, default=8000)
 
     p_bf = sub.add_parser("backfill-reviews",
                           help="re-fetch products that have a review count but no stored reviews")
+    p_bf.add_argument("--source", default="totalwine")
     p_bf.add_argument("--limit", type=int, default=None)
     p_bf.add_argument("--delay-s", type=float, default=1.0)
 
     p_run = sub.add_parser("run", help="scrape product data from the sitemaps")
+    p_run.add_argument("--source", default="totalwine",
+                       help="retailer label stamped on every row")
     p_run.add_argument("--limit", type=int, default=None, help="max products")
     p_run.add_argument("--max-sitemaps", type=int, default=None,
                        help="cap number of product sitemaps scanned")
@@ -61,7 +66,7 @@ def main() -> None:
     elif args.cmd == "sync-stores":
         from .pipeline import sync_stores
 
-        print({"stores": sync_stores()})
+        print({"stores": sync_stores(args.source)})
     elif args.cmd == "dashboard":
         from .dashboard import serve
 
@@ -69,11 +74,11 @@ def main() -> None:
     elif args.cmd == "backfill-reviews":
         from .pipeline import backfill_reviews
 
-        print(backfill_reviews(limit=args.limit, delay_s=args.delay_s))
+        print(backfill_reviews(source=args.source, limit=args.limit, delay_s=args.delay_s))
     elif args.cmd == "run":
         from .pipeline import run
 
-        print(run(limit=args.limit, max_sitemaps=args.max_sitemaps,
+        print(run(source=args.source, limit=args.limit, max_sitemaps=args.max_sitemaps,
                   max_wait_ms=args.max_wait_ms,
                   delay_s=0.0 if args.fast else args.delay_s,
                   block_resources=args.fast,

@@ -23,7 +23,26 @@ from .models import (
     Store,
 )
 
-engine = create_engine(config.db_url, future=True)
+def _make_engine():
+    """Engine tuned to work against local Postgres OR Supabase.
+
+    Supabase needs SSL, and its connection pooler (pgBouncer, transaction mode)
+    breaks psycopg3's default prepared statements — so for any remote host we
+    require SSL and disable prepared statements. pool_pre_ping recovers dropped
+    connections on a long remote run.
+    """
+    url = config.db_url
+    is_local = "localhost" in url or "127.0.0.1" in url
+    connect_args: dict = {}
+    if not is_local:
+        connect_args["sslmode"] = "require"
+        connect_args["prepare_threshold"] = None  # pgBouncer-safe
+    return create_engine(
+        url, future=True, pool_pre_ping=not is_local, connect_args=connect_args
+    )
+
+
+engine = _make_engine()
 SessionLocal = sessionmaker(bind=engine, future=True)
 
 
@@ -47,14 +66,17 @@ def session_scope() -> Iterator[Session]:
         session.close()
 
 
-def existing_product_ids() -> set[str]:
-    """All product_ids already in the DB — used to resume/skip on re-run."""
+def existing_product_ids(source: str) -> set[str]:
+    """product_ids already in the DB for a source — used to resume/skip."""
     with SessionLocal() as session:
-        return {row[0] for row in session.query(Product.product_id).all()}
+        return {
+            row[0]
+            for row in session.query(Product.product_id).filter(Product.source == source)
+        }
 
 
 def upsert_products(session: Session, rows: list[dict]) -> int:
-    """Upsert products on product_id; refresh mutable fields + last_seen."""
+    """Upsert products on (source, product_id); refresh mutable fields."""
     if not rows:
         return 0
     stmt = pg_insert(Product).values(rows)
@@ -73,7 +95,8 @@ def upsert_products(session: Session, rows: list[dict]) -> int:
         )
         if c in rows[0]
     }
-    stmt = stmt.on_conflict_do_update(index_elements=["product_id"], set_=update_cols)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["source", "product_id"], set_=update_cols)
     session.execute(stmt)
     return len(rows)
 
@@ -83,7 +106,7 @@ def insert_variants(session: Session, rows: list[dict]) -> int:
     if not rows:
         return 0
     stmt = pg_insert(ProductVariant).values(rows).on_conflict_do_nothing(
-        index_elements=["variant_id", "captured_at"]
+        index_elements=["source", "variant_id", "captured_at"]
     )
     session.execute(stmt)
     return len(rows)
@@ -93,7 +116,7 @@ def upsert_reviews(session: Session, rows: list[dict]) -> int:
     if not rows:
         return 0
     stmt = pg_insert(Review).values(rows).on_conflict_do_nothing(
-        index_elements=["review_id", "product_id"]
+        index_elements=["source", "review_id", "product_id"]
     )
     session.execute(stmt)
     return len(rows)
@@ -104,7 +127,7 @@ def upsert_stores(session: Session, rows: list[dict]) -> int:
         return 0
     stmt = pg_insert(Store).values(rows)
     stmt = stmt.on_conflict_do_update(
-        index_elements=["store_id"],
+        index_elements=["source", "store_id"],
         set_={c: stmt.excluded[c] for c in ("name", "city", "state", "zip")},
     )
     session.execute(stmt)
@@ -115,7 +138,7 @@ def insert_availability(session: Session, rows: list[dict]) -> int:
     if not rows:
         return 0
     stmt = pg_insert(ProductStoreAvailability).values(rows).on_conflict_do_nothing(
-        index_elements=["product_id", "store_id", "captured_at"]
+        index_elements=["source", "product_id", "store_id", "captured_at"]
     )
     session.execute(stmt)
     return len(rows)

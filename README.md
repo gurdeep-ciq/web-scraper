@@ -39,7 +39,7 @@ You also need **Google Chrome** installed (the session uses `channel="chrome"`).
 
 ```bash
 docker compose up -d                 # local Postgres on host port 5433
-python -m scraper.cli init-db        # create schema `totalwine` + tables
+python -m scraper.cli init-db        # create schema `web_scraping` + tables
 python -m scraper.cli sync-stores    # load ~217 stores (curl, fast)
 python -m scraper.cli run --limit 50 # scrape 50 products end-to-end (browser)
 python -m scraper.cli run            # full catalog (~85k; long-running)
@@ -76,8 +76,9 @@ headless server use `xvfb-run` rather than headless mode (PX blocks headless).
 
 Inspect results:
 ```sql
-SELECT category, count(*) FROM totalwine.product GROUP BY 1 ORDER BY 2 DESC;
-SELECT * FROM totalwine.scrape_run ORDER BY id DESC LIMIT 5;
+SELECT source, count(*) FROM web_scraping.product GROUP BY 1;
+SELECT category, count(*) FROM web_scraping.product GROUP BY 1 ORDER BY 2 DESC;
+SELECT * FROM web_scraping.scrape_run ORDER BY id DESC LIMIT 5;
 ```
 
 ## Layout
@@ -97,8 +98,10 @@ SELECT * FROM totalwine.scrape_run ORDER BY id DESC LIMIT 5;
 ## Migrating to staging
 
 The DB target is one env var. Once Ashray grants Supabase access and posts the
-staging Postgres URL, set `DB_URL` to it, keep `DB_SCHEMA=totalwine` (a **new**
-schema — don't touch existing ones), re-run `init-db` then the pipeline. Later,
+staging Postgres URL, set `DB_URL` to it, keep `DB_SCHEMA=web_scraping` (a
+**new** schema holding all retailers — don't touch existing ones), re-run
+`init-db` then the pipeline. Every table carries a `source` column
+(`totalwine` / `walmart` / `amazon`); pass `--source <name>` on `run`. Later,
 `pipeline.run` wraps cleanly as a Dagster asset for the quarterly schedule.
 
 ## Notes / open questions for Ashray

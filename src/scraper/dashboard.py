@@ -43,6 +43,8 @@ def gather() -> dict:
             c, f"SELECT max(price) FROM {S}.product_variant WHERE price IS NOT NULL")
         d["with_rating"] = _scalar(
             c, f"SELECT count(*) FROM {S}.product WHERE review_count > 0")
+        d["sources"] = c.execute(text(
+            f"SELECT source, count(*) n FROM {S}.product GROUP BY 1 ORDER BY n DESC")).all()
         d["categories"] = c.execute(text(
             f"SELECT coalesce(category,'(none)'), count(*) n FROM {S}.product "
             f"GROUP BY 1 ORDER BY n DESC LIMIT 12")).all()
@@ -55,35 +57,37 @@ def gather() -> dict:
         # Order by ACTUAL stored review rows (not the site's count) so every
         # listed product has reviews to show when clicked.
         d["top"] = c.execute(text(
-            f"SELECT p.product_id, p.name, p.category, v.size, v.price, p.avg_rating, "
+            f"SELECT p.source, p.product_id, p.name, p.category, v.size, v.price, p.avg_rating, "
             f"       count(r.*) AS review_count "
             f"FROM {S}.product p "
-            f"LEFT JOIN {S}.product_variant v USING(product_id) "
-            f"JOIN {S}.review r ON r.product_id = p.product_id "
-            f"GROUP BY p.product_id, p.name, p.category, v.size, v.price, p.avg_rating "
+            f"LEFT JOIN {S}.product_variant v ON v.source=p.source AND v.product_id=p.product_id "
+            f"JOIN {S}.review r ON r.source=p.source AND r.product_id=p.product_id "
+            f"GROUP BY p.source, p.product_id, p.name, p.category, v.size, v.price, p.avg_rating "
             f"ORDER BY review_count DESC LIMIT 15")).all()
         d["latest_reviews"] = c.execute(text(
-            f"SELECT r.product_id, p.name, r.rating, r.title, r.body, r.author, r.review_date "
-            f"FROM {S}.review r JOIN {S}.product p USING(product_id) "
+            f"SELECT r.source, r.product_id, p.name, r.rating, r.title, r.body, r.author, r.review_date "
+            f"FROM {S}.review r JOIN {S}.product p ON p.source=r.source AND p.product_id=r.product_id "
             f"ORDER BY r.review_date DESC NULLS LAST LIMIT 12")).all()
         return d
 
 
-def gather_product(pid: str) -> dict | None:
+def gather_product(source: str, pid: str) -> dict | None:
     with engine.connect() as c:
         prod = c.execute(text(
-            f"SELECT product_id, name, brand, category, subcategory, url, "
+            f"SELECT source, product_id, name, brand, category, subcategory, url, "
             f"avg_rating, review_count, ai_review_summary FROM {S}.product "
-            f"WHERE product_id = :p"), {"p": pid}).mappings().first()
+            f"WHERE source = :s AND product_id = :p"),
+            {"s": source, "p": pid}).mappings().first()
         if not prod:
             return None
         variants = c.execute(text(
-            f"SELECT size, price, in_stock FROM {S}.product_variant WHERE product_id = :p "
-            f"ORDER BY price NULLS LAST"), {"p": pid}).all()
+            f"SELECT size, price, in_stock FROM {S}.product_variant "
+            f"WHERE source = :s AND product_id = :p ORDER BY price NULLS LAST"),
+            {"s": source, "p": pid}).all()
         reviews = c.execute(text(
             f"SELECT rating, title, body, author, review_date, helpful_count "
-            f"FROM {S}.review WHERE product_id = :p "
-            f"ORDER BY helpful_count DESC NULLS LAST"), {"p": pid}).all()
+            f"FROM {S}.review WHERE source = :s AND product_id = :p "
+            f"ORDER BY helpful_count DESC NULLS LAST"), {"s": source, "p": pid}).all()
         return {"product": prod, "variants": variants, "reviews": reviews}
 
 
@@ -108,8 +112,9 @@ def _review_card(r, *, show_product=False) -> str:
     head = ""
     if show_product:
         pid = getattr(r, "product_id", "")
-        head = (f'<a class="rp" href="/product?id={html.escape(str(pid))}">'
-                f'{html.escape(r.name or "")}</a>')
+        src = getattr(r, "source", "")
+        head = (f'<a class="rp" href="/product?source={html.escape(str(src))}'
+                f'&id={html.escape(str(pid))}">{html.escape(r.name or "")}</a>')
     return (
         f'<div class="rev">{head}'
         f'<div class="rh">{_stars(r.rating)} '
@@ -136,6 +141,9 @@ def render(d: dict) -> str:
     )
     cats = "".join(_bar(lbl, n, cat_max) for lbl, n in d["categories"])
     rats = "".join(_bar(f"{b}★", n, rat_max, "#f59e0b") for b, n in d["ratings"])
+    src_max = max([n for _, n in d["sources"]], default=1)
+    srcs = "".join(_bar(s, n, src_max, "#10b981") for s, n in d["sources"]) \
+        or '<div class="sub">no data yet</div>'
 
     runs = "".join(
         f"<tr><td>{r.id}</td><td>{str(r.started_at)[:19]}</td>"
@@ -145,7 +153,8 @@ def render(d: dict) -> str:
         for r in d["runs"]
     )
     top = "".join(
-        f'<tr><td><a href="/product?id={html.escape(str(r.product_id))}">{html.escape(r.name or "")}</a></td>'
+        f'<tr><td><a href="/product?source={html.escape(str(r.source))}'
+        f'&id={html.escape(str(r.product_id))}">{html.escape(r.name or "")}</a></td>'
         f"<td>{html.escape(r.category or '')}</td>"
         f"<td>{html.escape(r.size or '')}</td>"
         f"<td>{('$'+str(r.price)) if r.price is not None else '—'}</td>"
@@ -186,10 +195,11 @@ def render(d: dict) -> str:
   .by {{ color:#8a8a95; }} .rb {{ font-size:13px; color:#c7c7d0; line-height:1.5; }}
   .back {{ font-size:13px; }}
 </style></head><body>
-<header><h1>\U0001f377 Total Wine Scraper — Ingestion Dashboard</h1>
+<header><h1>\U0001f377 Web Scraper — Ingestion Dashboard</h1>
 <div class="sub">schema <code>{S}</code> &middot; auto-refreshes every 15s</div></header>
 <main>
   <div class="cards">{cards}</div>
+  <section><h2>Products by source</h2>{srcs}</section>
   <section><h2>Products by category</h2>{cats or '<div class="sub">no data yet</div>'}</section>
   <section><h2>Rating distribution</h2>{rats or '<div class="sub">no ratings yet</div>'}</section>
   <section><h2>Top-reviewed products <span class="sub">(click a name for its reviews)</span></h2>
@@ -257,8 +267,10 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path in ("/", "/index.html"):
                 body = render(gather())
             elif parsed.path == "/product":
-                pid = (parse_qs(parsed.query).get("id") or [""])[0]
-                pv = gather_product(pid)
+                q = parse_qs(parsed.query)
+                pid = (q.get("id") or [""])[0]
+                src = (q.get("source") or ["totalwine"])[0]
+                pv = gather_product(src, pid)
                 body = render_product(pv) if pv else "<pre>product not found</pre>"
             else:
                 self.send_error(404)

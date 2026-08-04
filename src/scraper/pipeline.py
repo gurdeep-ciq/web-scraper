@@ -43,16 +43,26 @@ def _url_code(url: str) -> str | None:
     return m.group(1) if m else None
 
 
-def sync_stores() -> int:
+DEFAULT_SOURCE = "totalwine"
+
+
+def _stamp(rows: list[dict], source: str) -> list[dict]:
+    """Add the source key to each row before persisting."""
+    for r in rows:
+        r["source"] = source
+    return rows
+
+
+def sync_stores(source: str = DEFAULT_SOURCE) -> int:
     """Load the store directory from the sitemap (no browser needed)."""
-    stores = [s.model_dump() for s in iter_stores()]
+    stores = _stamp([s.model_dump() for s in iter_stores()], source)
     with session_scope() as session:
         n = upsert_stores(session, stores)
     log.info("synced %d stores", n)
     return n
 
 
-def _persist_one(data: dict) -> bool:
+def _persist_one(data: dict, source: str = DEFAULT_SOURCE) -> bool:
     """Validate + persist one product's payloads. Returns True on success."""
     product_json = data.get("product")
     if not product_json:
@@ -66,11 +76,11 @@ def _persist_one(data: dict) -> bool:
     reviews = parse_reviews(data.get("reviews") or {}, product_id=pid)
 
     with session_scope() as session:
-        upsert_products(session, [product.model_dump()])
+        upsert_products(session, _stamp([product.model_dump()], source))
         if variant is not None:
-            insert_variants(session, [variant.model_dump()])
+            insert_variants(session, _stamp([variant.model_dump()], source))
         if reviews:
-            upsert_reviews(session, [r.model_dump() for r in reviews])
+            upsert_reviews(session, _stamp([r.model_dump() for r in reviews], source))
     return True
 
 
@@ -122,7 +132,8 @@ def _fetch_with_rewarm(sess, url: str, thr: "_Throttle") -> dict | None:
         return None
 
 
-def backfill_reviews(*, limit: int | None = None, delay_s: float = 1.0) -> dict:
+def backfill_reviews(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
+                     delay_s: float = 1.0) -> dict:
     """Re-fetch products that have a review count but no stored reviews.
 
     Early fast runs sometimes returned before the reviews XHR fired; this
@@ -134,11 +145,12 @@ def backfill_reviews(*, limit: int | None = None, delay_s: float = 1.0) -> dict:
 
     with session_scope() as session:
         rows = session.execute(text(
-            f"SELECT product_id, url FROM {_cfg.db_schema}.product "
-            f"WHERE review_count > 0 AND url IS NOT NULL "
-            f"AND product_id NOT IN (SELECT DISTINCT product_id FROM {_cfg.db_schema}.review) "
+            f"SELECT product_id, url FROM {_cfg.db_schema}.product p "
+            f"WHERE source = :src AND review_count > 0 AND url IS NOT NULL "
+            f"AND NOT EXISTS (SELECT 1 FROM {_cfg.db_schema}.review r "
+            f"               WHERE r.source = p.source AND r.product_id = p.product_id) "
             f"ORDER BY review_count DESC"
-            + (f" LIMIT {int(limit)}" if limit else ""))).all()
+            + (f" LIMIT {int(limit)}" if limit else "")), {"src": source}).all()
 
     targets = [(r[0], r[1]) for r in rows]
     log.info("backfill: %d products missing reviews", len(targets))
@@ -161,7 +173,7 @@ def backfill_reviews(*, limit: int | None = None, delay_s: float = 1.0) -> dict:
             reviews = parse_reviews(data.get("reviews") or {}, product_id=pid)
             if reviews:
                 with session_scope() as session:
-                    upsert_reviews(session, [r.model_dump() for r in reviews])
+                    upsert_reviews(session, _stamp([r.model_dump() for r in reviews], source))
                 fixed += 1
             else:
                 still_empty += 1
@@ -174,15 +186,15 @@ def backfill_reviews(*, limit: int | None = None, delay_s: float = 1.0) -> dict:
     return summary
 
 
-def run(*, limit: int | None = None, max_sitemaps: int | None = None,
-        max_wait_ms: int = 10000, delay_s: float = 1.0,
-        block_resources: bool = False, resume: bool = True,
+def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
+        max_sitemaps: int | None = None, max_wait_ms: int = 10000,
+        delay_s: float = 1.0, block_resources: bool = False, resume: bool = True,
         log_every: int = 25) -> dict:
     """Scrape product data for up to `limit` products from the sitemaps.
 
-    Resumable: with resume=True, products already in the DB are skipped, so a
-    re-run continues where a crash/stop left off (and retries anything that was
-    blocked, since blocked URLs never made it into the DB).
+    Resumable: with resume=True, products already in the DB (for this source)
+    are skipped, so a re-run continues where a crash/stop left off (and retries
+    anything that was blocked, since blocked URLs never made it into the DB).
 
     Defaults are tuned for PerimeterX-friendliness on a long run: a 1s base
     pace (with jitter), resources NOT blocked (real browsers load assets), and
@@ -191,12 +203,13 @@ def run(*, limit: int | None = None, max_sitemaps: int | None = None,
     """
     ingested = skipped = errors = blocked = 0
     thr = _Throttle(base=delay_s)
-    done = existing_product_ids() if resume else set()
+    done = existing_product_ids(source) if resume else set()
     if done:
-        log.info("resume: %d products already in DB will be skipped", len(done))
+        log.info("resume: %d products already in DB (source=%s) will be skipped",
+                 len(done), source)
 
     with session_scope() as session:
-        run_row = ScrapeRun(category="sitemap")
+        run_row = ScrapeRun(source=source, category="sitemap")
         session.add(run_row)
         session.flush()
         run_id = run_row.id
@@ -223,7 +236,7 @@ def run(*, limit: int | None = None, max_sitemaps: int | None = None,
                     continue
                 thr.on_success()
 
-                if _persist_one(data):
+                if _persist_one(data, source):
                     ingested += 1
                     if code:
                         done.add(code)   # avoid re-fetching within this run too

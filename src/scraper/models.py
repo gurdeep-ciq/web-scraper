@@ -1,11 +1,15 @@
 """Data model: SQLAlchemy ORM tables + Pydantic validation schemas.
 
 Two layers on purpose:
-- Pydantic `*In` models validate/clean every record scraped from the site
-  BEFORE it touches the DB (this is the "data validation" step Ashray flagged).
-- SQLAlchemy models are the persisted shape in Postgres (schema=`totalwine`).
+- Pydantic `*In` models validate/clean every record scraped from a site BEFORE
+  it touches the DB (the "data validation" step Ashray flagged).
+- SQLAlchemy models are the persisted shape in Postgres (schema=`web_scraping`).
 
-All prices/availability are store- and time-scoped, so variant prices and
+Multi-source: every table carries a `source` column (e.g. 'totalwine',
+'walmart', 'amazon') and it's part of the primary key, so the same schema holds
+all retailers without id collisions and you can compare a product across sites.
+
+Prices/availability are store- and time-scoped, so variant prices and
 availability keep a `captured_at` history rather than overwriting in place.
 """
 
@@ -18,13 +22,14 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Float,
-    ForeignKey,
+    Index,
     Integer,
+    MetaData,
     String,
     Text,
     func,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from .config import config
 
@@ -34,21 +39,17 @@ def utcnow() -> datetime:
 
 
 class Base(DeclarativeBase):
-    metadata = None  # set below so every table lands in the configured schema
-
-
-# Bind all tables to the configured schema (e.g. `totalwine`).
-from sqlalchemy import MetaData  # noqa: E402
-
-Base.metadata = MetaData(schema=config.db_schema)
+    # Bind every table to the configured schema (e.g. `web_scraping`).
+    metadata = MetaData(schema=config.db_schema)
 
 
 # --------------------------------------------------------------------------- #
-# ORM tables
+# ORM tables  (source is part of every natural key)
 # --------------------------------------------------------------------------- #
 class Product(Base):
     __tablename__ = "product"
 
+    source: Mapped[str] = mapped_column(String, primary_key=True)
     product_id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     brand: Mapped[str | None] = mapped_column(String)
@@ -63,34 +64,32 @@ class Product(Base):
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
 
-    variants: Mapped[list["ProductVariant"]] = relationship(back_populates="product")
-    reviews: Mapped[list["Review"]] = relationship(back_populates="product")
-
 
 class ProductVariant(Base):
     __tablename__ = "product_variant"
+    __table_args__ = (Index("ix_variant_source_product", "source", "product_id"),)
 
+    source: Mapped[str] = mapped_column(String, primary_key=True)
     variant_id: Mapped[str] = mapped_column(String, primary_key=True)
-    product_id: Mapped[str] = mapped_column(ForeignKey("product.product_id"))
-    size: Mapped[str | None] = mapped_column(String)
-    price: Mapped[float | None] = mapped_column(Float)
-    in_stock: Mapped[bool | None] = mapped_column(Boolean)
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, primary_key=True
     )
-
-    product: Mapped[Product] = relationship(back_populates="variants")
+    product_id: Mapped[str] = mapped_column(String)
+    size: Mapped[str | None] = mapped_column(String)
+    price: Mapped[float | None] = mapped_column(Float)
+    in_stock: Mapped[bool | None] = mapped_column(Boolean)
 
 
 class Review(Base):
     __tablename__ = "review"
+    __table_args__ = (Index("ix_review_source_product", "source", "product_id"),)
 
     # Composite PK: the same review is shared across a product family (all SKUs
-    # of one product return the same review ids), so key on both to let each
-    # product row keep its own copy.
+    # of one product return the same review ids), so key on source+id+product
+    # to let each product row keep its own copy.
+    source: Mapped[str] = mapped_column(String, primary_key=True)
     review_id: Mapped[str] = mapped_column(String, primary_key=True)
-    product_id: Mapped[str] = mapped_column(
-        ForeignKey("product.product_id"), primary_key=True)
+    product_id: Mapped[str] = mapped_column(String, primary_key=True)
     rating: Mapped[float | None] = mapped_column(Float)
     title: Mapped[str | None] = mapped_column(String)
     body: Mapped[str | None] = mapped_column(Text)
@@ -98,12 +97,11 @@ class Review(Base):
     review_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     helpful_count: Mapped[int | None] = mapped_column(Integer)
 
-    product: Mapped[Product] = relationship(back_populates="reviews")
-
 
 class Store(Base):
     __tablename__ = "store"
 
+    source: Mapped[str] = mapped_column(String, primary_key=True)
     store_id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str | None] = mapped_column(String)
     city: Mapped[str | None] = mapped_column(String)
@@ -114,20 +112,20 @@ class Store(Base):
 class ProductStoreAvailability(Base):
     __tablename__ = "product_store_availability"
 
-    product_id: Mapped[str] = mapped_column(
-        ForeignKey("product.product_id"), primary_key=True
-    )
-    store_id: Mapped[str] = mapped_column(ForeignKey("store.store_id"), primary_key=True)
-    pickup_available: Mapped[bool | None] = mapped_column(Boolean)
+    source: Mapped[str] = mapped_column(String, primary_key=True)
+    product_id: Mapped[str] = mapped_column(String, primary_key=True)
+    store_id: Mapped[str] = mapped_column(String, primary_key=True)
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, primary_key=True
     )
+    pickup_available: Mapped[bool | None] = mapped_column(Boolean)
 
 
 class ScrapeRun(Base):
     __tablename__ = "scrape_run"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source: Mapped[str | None] = mapped_column(String)
     category: Mapped[str | None] = mapped_column(String)
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -140,6 +138,7 @@ class ScrapeRun(Base):
 
 # --------------------------------------------------------------------------- #
 # Pydantic validation schemas (validate before persist)
+# `source` is stamped by the pipeline, not scraped, so it's not required here.
 # --------------------------------------------------------------------------- #
 class ProductIn(BaseModel):
     product_id: str
