@@ -208,6 +208,7 @@ def backfill_reviews(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
     thr = _Throttle(base=delay_s)
 
     with TotalWineSession() as sess:
+        sess.rewarm()  # homepage first so PX establishes a token in this context
         for pid, url in targets:
             try:
                 data = _fetch_with_rewarm(sess, url, thr)
@@ -274,6 +275,10 @@ def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
         with TotalWineSession(
             max_wait_ms=max_wait_ms, block_resources=block_resources
         ) as sess:
+            # Land on the homepage first so the PerimeterX sensor establishes a
+            # token in this fresh context — a real user (and `warm`) does this.
+            # Jumping straight to a product page otherwise trips PX immediately.
+            sess.rewarm()
             for url in iter_product_urls(limit=limit, max_sitemaps=max_sitemaps):
                 code = _url_code(url)
                 if resume and code and code in done:
