@@ -53,6 +53,32 @@ def _stamp(rows: list[dict], source: str) -> list[dict]:
     return rows
 
 
+def warm(source: str = DEFAULT_SOURCE) -> dict:
+    """Interactively warm the browser profile: open the site, let YOU solve the
+    first Press & Hold once, then verify by fetching a product. After this the
+    persistent profile carries the PerimeterX token so a later `run --patient`
+    can proceed unattended (an unattended run can't solve that first challenge).
+    """
+    urls = list(iter_product_urls(limit=5))
+    with TotalWineSession() as sess:
+        sess.rewarm()  # load homepage so any challenge appears
+        print("\n>>> A Chrome window is open. If a 'Press & Hold' challenge shows,")
+        print(">>> complete it now (hold until it passes).")
+        input(">>> Then press Enter here to verify the profile is warm...\n")
+        for url in urls:
+            try:
+                data = sess.fetch(url)
+            except PXBlocked:
+                continue
+            if data.get("product"):
+                _persist_one(data, source)
+                print("✓ profile is WARM — verified by fetching:", data["product"].get("name"))
+                return {"warm": True}
+        print("✗ still blocked after solving — the IP may be hard-flagged; "
+              "rest it a few hours or switch IP, then warm again.")
+        return {"warm": False}
+
+
 def sync_stores(source: str = DEFAULT_SOURCE) -> int:
     """Load the store directory from the sitemap (no browser needed)."""
     stores = _stamp([s.model_dump() for s in iter_stores()], source)

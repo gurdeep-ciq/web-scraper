@@ -22,6 +22,11 @@ def main() -> None:
     p_ss = sub.add_parser("sync-stores", help="load the store directory from the sitemap")
     p_ss.add_argument("--source", default="totalwine")
 
+    p_warm = sub.add_parser("warm",
+                            help="interactively solve the first Press & Hold to warm the profile "
+                                 "(do this once before an unattended --patient run)")
+    p_warm.add_argument("--source", default="totalwine")
+
     p_dash = sub.add_parser("dashboard", help="serve the ingestion dashboard")
     p_dash.add_argument("--port", type=int, default=8000)
 
@@ -74,6 +79,10 @@ def main() -> None:
         from .pipeline import sync_stores
 
         print({"stores": sync_stores(args.source)})
+    elif args.cmd == "warm":
+        from .pipeline import warm
+
+        print(warm(args.source))
     elif args.cmd == "dashboard":
         from .dashboard import serve
 
