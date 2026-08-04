@@ -158,6 +158,31 @@ class TotalWineSession:
         except Exception:
             pass
 
+    def warm_up(self, max_seconds: int = 60) -> bool:
+        """Open the homepage and give the user a window to solve a Press & Hold.
+
+        Returns as soon as the page is un-blocked (so a clean/invisible pass
+        proceeds in a couple of seconds), otherwise keeps the challenge on
+        screen and polls up to `max_seconds` so a human can complete it.
+        """
+        try:
+            self._page.goto(HOMEPAGE, wait_until="domcontentloaded", timeout=60_000)
+        except Exception:
+            pass
+        self._fidget()
+        end = time.time() + max_seconds
+        while True:
+            try:
+                html = self._page.content()
+            except Exception:
+                html = ""
+            blocked = '"appId": "PXFF0j69T5"' in html or "Press & Hold" in html
+            if not blocked:
+                return True
+            if time.time() >= end:
+                return False
+            self._page.wait_for_timeout(2000)
+
     def rewarm(self, wait_ms: int | None = None) -> bool:
         """Recover a cold/blocked session: browse the homepage like a human and
         let the PX sensor re-run (patchright usually clears the invisible
@@ -172,6 +197,30 @@ class TotalWineSession:
             return '"appId": "PXFF0j69T5"' not in html and "Press & Hold" not in html
         except Exception:
             return False
+
+    def challenge_visible(self) -> bool:
+        """True if a solvable Press & Hold / captcha is actually on screen (vs a
+        hard 403 deny, which offers nothing to solve)."""
+        try:
+            html = self._page.content()
+        except Exception:
+            return False
+        return "Press & Hold" in html or "px-captcha" in html
+
+    def wait_for_solve(self, seconds: int) -> dict | None:
+        """After a product blocked, keep the challenge page on screen and wait
+        for the USER to complete the Press & Hold. If they solve it, the page
+        loads the product and its getProduct XHR fires — we capture and return
+        it. No navigation away, so the challenge the user sees stays put.
+        """
+        if self._wait_for("product", seconds * 1000):
+            self._wait_for("reviews", self.capture_grace_ms)
+            return {
+                "product": self._cap.get("product"),
+                "reviews": self._cap.get("reviews"),
+                "summary": self._cap.get("summary"),
+            }
+        return None
 
     def fetch(self, url: str, *, retries: int = 1) -> dict:
         """Navigate to a product page and return the intercepted JSON payloads.

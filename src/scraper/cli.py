@@ -57,6 +57,14 @@ def main() -> None:
                        help="take a break every N products (default 60 with --patient)")
     p_run.add_argument("--pause-seconds", type=float, default=None,
                        help="length of each break in seconds (default 240 with --patient)")
+    p_run.add_argument("--warm-wait", type=int, default=60,
+                       help="seconds to keep the homepage up at start so you can solve a "
+                            "Press & Hold (returns early if PX passes invisibly)")
+    p_run.add_argument("--interactive", action="store_true",
+                       help="when a product gets PX-blocked mid-run, keep the challenge on "
+                            "screen and wait for YOU to solve it (attended runs)")
+    p_run.add_argument("--solve-wait", type=int, default=90,
+                       help="seconds to wait for you to solve a mid-run challenge (--interactive)")
 
     p_par = sub.add_parser("run-parallel",
                            help="scrape with N browser workers (needs 1 proxy/IP each)")
@@ -113,7 +121,8 @@ def main() -> None:
                   delay_s=delay, block_resources=args.fast,
                   resume=not args.no_resume,
                   pause_every=pause_every, pause_seconds=pause_seconds,
-                  block_pauses=block_pauses))
+                  block_pauses=block_pauses, warm_seconds=args.warm_wait,
+                  interactive=args.interactive, solve_seconds=args.solve_wait))
     elif args.cmd == "run-parallel":
         from .parallel import run_parallel
 

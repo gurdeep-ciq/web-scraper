@@ -141,12 +141,30 @@ class _Throttle:
             time.sleep(wait + random.uniform(0, 0.4 * wait + 0.3))  # jitter
 
 
-def _fetch_with_rewarm(sess, url: str, thr: "_Throttle") -> dict | None:
-    """Fetch a URL; on a PX block, back off, re-warm, and retry once."""
+def _fetch_with_rewarm(sess, url: str, thr: "_Throttle",
+                       interactive: bool = False, solve_seconds: int = 90) -> dict | None:
+    """Fetch a URL; on a PX block, recover.
+
+    interactive: keep the challenge on the product page and wait for the USER to
+    solve the Press & Hold (no navigating away). Otherwise fall back to an
+    automatic homepage re-warm + retry.
+    """
     try:
         return sess.fetch(url)
     except PXBlocked:
         pass
+
+    if interactive and sess.challenge_visible():
+        log.warning(">>> PerimeterX 'Press & Hold' on a product — SOLVE it in the "
+                    "browser window now (waiting up to %ds)...", solve_seconds)
+        data = sess.wait_for_solve(solve_seconds)
+        if data and data.get("product"):
+            log.info("challenge solved — continuing")
+            return data
+    elif interactive:
+        log.warning("PerimeterX HARD-blocked this product (403, no solvable challenge) — "
+                    "the IP is flagged. Nothing to solve; rest the IP or switch networks.")
+
     cooldown = thr.on_block()
     log.warning("PX blocked (%d in a row); cooldown %.0fs + re-warm (penalty now %.1fs)",
                 thr.consec, cooldown, thr.penalty)
@@ -159,14 +177,13 @@ def _fetch_with_rewarm(sess, url: str, thr: "_Throttle") -> dict | None:
 
 
 def _fetch_patient(sess, url: str, thr: "_Throttle",
-                   pause_seconds: float, block_pauses: int) -> dict | None:
-    """Fetch with patient recovery: after the quick re-warm fails, take
-    escalating multi-minute pauses to let PerimeterX's per-IP score decay, then
-    retry the SAME url. This is what makes a single-IP run hands-off — instead
-    of skipping a blocked product (or needing a manual Press & Hold), it waits
-    the challenge out. Gives up on the url only after `block_pauses` long waits.
+                   pause_seconds: float, block_pauses: int,
+                   interactive: bool = False, solve_seconds: int = 90) -> dict | None:
+    """Fetch with recovery. interactive => let the user solve the Press & Hold
+    on the product page. Otherwise patient mode takes escalating multi-minute
+    pauses to let PerimeterX's per-IP score decay and retries the same url.
     """
-    data = _fetch_with_rewarm(sess, url, thr)
+    data = _fetch_with_rewarm(sess, url, thr, interactive, solve_seconds)
     pauses = 0
     while data is None and pauses < block_pauses:
         pauses += 1
@@ -241,6 +258,7 @@ def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
         max_sitemaps: int | None = None, max_wait_ms: int = 10000,
         delay_s: float = 1.0, block_resources: bool = False, resume: bool = True,
         pause_every: int = 0, pause_seconds: float = 180.0, block_pauses: int = 0,
+        warm_seconds: int = 60, interactive: bool = False, solve_seconds: int = 90,
         log_every: int = 25) -> dict:
     """Scrape product data for up to `limit` products from the sitemaps.
 
@@ -278,7 +296,14 @@ def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
             # Land on the homepage first so the PerimeterX sensor establishes a
             # token in this fresh context — a real user (and `warm`) does this.
             # Jumping straight to a product page otherwise trips PX immediately.
-            sess.rewarm()
+            # Give the user up to warm_seconds to solve a Press & Hold if shown.
+            log.info("warming up on homepage — if a 'Press & Hold' appears, "
+                     "solve it (waiting up to %ds)...", warm_seconds)
+            if sess.warm_up(max_seconds=warm_seconds):
+                log.info("warm-up OK — starting product fetches")
+            else:
+                log.warning("warm-up still blocked after %ds; the IP may be hot. "
+                            "Continuing, but expect blocks.", warm_seconds)
             for url in iter_product_urls(limit=limit, max_sitemaps=max_sitemaps):
                 code = _url_code(url)
                 if resume and code and code in done:
@@ -286,7 +311,8 @@ def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
                     continue
 
                 try:
-                    data = _fetch_patient(sess, url, thr, pause_seconds, block_pauses)
+                    data = _fetch_patient(sess, url, thr, pause_seconds, block_pauses,
+                                          interactive, solve_seconds)
                 except Exception as e:  # noqa: BLE001
                     errors += 1
                     log.warning("fetch/parse error %s: %s", url, e)
