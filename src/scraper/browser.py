@@ -159,25 +159,25 @@ class TotalWineSession:
             pass
 
     def warm_up(self, max_seconds: int = 60) -> bool:
-        """Open the homepage and give the user a window to solve a Press & Hold.
+        """Open the homepage so the PerimeterX sensor can establish the session
+        token before we hit product pages, and give the user a window to solve a
+        Press & Hold if one appears.
 
-        Returns as soon as the page is un-blocked (so a clean/invisible pass
-        proceeds in a couple of seconds), otherwise keeps the challenge on
-        screen and polls up to `max_seconds` so a human can complete it.
+        IMPORTANT: even when the homepage shows no challenge, the PX token isn't
+        set instantly — the sensor JS needs a few seconds to run and POST to the
+        collector. So we ALWAYS wait `rewarm_ms` first; otherwise product pages
+        hard-403 for lack of a token. Then, only if a Press & Hold is actually
+        visible, keep polling up to `max_seconds` for the user to complete it.
         """
         try:
             self._page.goto(HOMEPAGE, wait_until="domcontentloaded", timeout=60_000)
         except Exception:
             pass
         self._fidget()
+        self._page.wait_for_timeout(self.rewarm_ms)   # let the sensor set the token
         end = time.time() + max_seconds
         while True:
-            try:
-                html = self._page.content()
-            except Exception:
-                html = ""
-            blocked = '"appId": "PXFF0j69T5"' in html or "Press & Hold" in html
-            if not blocked:
+            if not self.challenge_visible():
                 return True
             if time.time() >= end:
                 return False
