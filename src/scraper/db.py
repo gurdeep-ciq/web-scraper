@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from .config import config
 from .models import (
     Base,
+    BlockedProduct,
     Product,
     ProductStoreAvailability,
     ProductVariant,
@@ -73,6 +74,40 @@ def existing_product_ids(source: str) -> set[str]:
             row[0]
             for row in session.query(Product.product_id).filter(Product.source == source)
         }
+
+
+def existing_blocked_ids(source: str) -> set[str]:
+    """product_ids previously blocked for a source — skipped unless retrying."""
+    with SessionLocal() as session:
+        return {
+            row[0]
+            for row in session.query(BlockedProduct.product_id).filter(
+                BlockedProduct.source == source
+            )
+        }
+
+
+def record_blocked(session: Session, source: str, product_id: str,
+                   url: str | None, reason: str = "PXBlocked") -> None:
+    """Remember a blocked product; bump attempts if already recorded."""
+    from .models import utcnow
+
+    stmt = pg_insert(BlockedProduct).values(
+        source=source, product_id=product_id, url=url,
+        attempts=1, last_reason=reason,
+    ).on_conflict_do_update(
+        index_elements=["source", "product_id"],
+        set_={"attempts": BlockedProduct.attempts + 1,
+              "last_reason": reason, "last_attempt": utcnow()},
+    )
+    session.execute(stmt)
+
+
+def clear_blocked(session: Session, source: str, product_id: str) -> None:
+    """Remove a product from the blocked list once it's been fetched OK."""
+    session.query(BlockedProduct).filter(
+        BlockedProduct.source == source, BlockedProduct.product_id == product_id
+    ).delete()
 
 
 def upsert_products(session: Session, rows: list[dict]) -> int:

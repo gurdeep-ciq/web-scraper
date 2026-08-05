@@ -20,8 +20,11 @@ import time
 
 from .browser import PXBlocked, TotalWineSession
 from .db import (
+    clear_blocked,
+    existing_blocked_ids,
     existing_product_ids,
     insert_variants,
+    record_blocked,
     session_scope,
     upsert_products,
     upsert_reviews,
@@ -260,7 +263,7 @@ def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
         delay_s: float = 1.0, block_resources: bool = False, resume: bool = True,
         pause_every: int = 0, pause_seconds: float = 180.0, block_pauses: int = 0,
         warm_seconds: int = 60, interactive: bool = False, solve_seconds: int = 90,
-        log_every: int = 25) -> dict:
+        retry_blocked: bool = False, log_every: int = 25) -> dict:
     """Scrape product data for up to `limit` products from the sitemaps.
 
     Resumable: with resume=True, products already in the DB (for this source)
@@ -283,6 +286,12 @@ def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
     if done:
         log.info("resume: %d products already in DB (source=%s) will be skipped",
                  len(done), source)
+    # Skip previously-blocked products by default so resume doesn't retry them
+    # first and ramp the throttle; --retry-blocked forces another attempt.
+    blocked_ids = set() if retry_blocked else existing_blocked_ids(source)
+    if blocked_ids:
+        log.info("skipping %d previously-blocked products (use --retry-blocked to retry)",
+                 len(blocked_ids))
 
     with session_scope() as session:
         run_row = ScrapeRun(source=source, category="sitemap")
@@ -307,7 +316,7 @@ def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
                             "Continuing, but expect blocks.", warm_seconds)
             for url in iter_product_urls(limit=limit, max_sitemaps=max_sitemaps):
                 code = _url_code(url)
-                if resume and code and code in done:
+                if code and (code in done or code in blocked_ids):
                     skipped += 1
                     continue
 
@@ -320,6 +329,9 @@ def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
                     continue
                 if data is None:
                     blocked += 1
+                    if code:
+                        with session_scope() as session:
+                            record_blocked(session, source, code, url)
                     thr.pace()
                     continue
                 thr.on_success()
@@ -328,6 +340,9 @@ def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
                     ingested += 1
                     if code:
                         done.add(code)   # avoid re-fetching within this run too
+                        if retry_blocked:
+                            with session_scope() as session:
+                                clear_blocked(session, source, code)
                 else:
                     errors += 1
 

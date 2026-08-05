@@ -121,6 +121,23 @@ class ProductStoreAvailability(Base):
     pickup_available: Mapped[bool | None] = mapped_column(Boolean)
 
 
+class BlockedProduct(Base):
+    """Products that hit a PerimeterX block and never got fetched. Skipped on
+    later runs by default (so resume doesn't retry them first and ramp the
+    throttle); retried only with --retry-blocked. Cleared once fetched OK."""
+
+    __tablename__ = "blocked_product"
+
+    source: Mapped[str] = mapped_column(String, primary_key=True)
+    product_id: Mapped[str] = mapped_column(String, primary_key=True)
+    url: Mapped[str | None] = mapped_column(String)
+    attempts: Mapped[int] = mapped_column(Integer, default=1)
+    last_reason: Mapped[str | None] = mapped_column(String)
+    last_attempt: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class ScrapeRun(Base):
     __tablename__ = "scrape_run"
 

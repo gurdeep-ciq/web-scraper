@@ -50,6 +50,9 @@ def main() -> None:
                        help="max speed: no pacing + block images/css/fonts (higher PX-block risk)")
     p_run.add_argument("--no-resume", action="store_true",
                        help="do not skip products already in the DB")
+    p_run.add_argument("--retry-blocked", action="store_true",
+                       help="also retry products that were blocked on earlier runs "
+                            "(by default those are skipped)")
     p_run.add_argument("--patient", action="store_true",
                        help="slower pace + proactive periodic breaks so PerimeterX escalates "
                             "less; blocked products are skipped (retried on a later resume run)")
@@ -121,7 +124,8 @@ def main() -> None:
                   resume=not args.no_resume,
                   pause_every=pause_every, pause_seconds=pause_seconds,
                   block_pauses=block_pauses, warm_seconds=args.warm_wait,
-                  interactive=args.interactive, solve_seconds=args.solve_wait))
+                  interactive=args.interactive, solve_seconds=args.solve_wait,
+                  retry_blocked=args.retry_blocked))
     elif args.cmd == "run-parallel":
         from .parallel import run_parallel
 
