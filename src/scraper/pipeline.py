@@ -161,13 +161,10 @@ def _fetch_with_rewarm(sess, url: str, thr: "_Throttle",
         if data and data.get("product"):
             log.info("challenge solved — continuing")
             return data
-    elif interactive:
-        log.warning("PerimeterX HARD-blocked this product (403, no solvable challenge) — "
-                    "the IP is flagged. Nothing to solve; rest the IP or switch networks.")
 
     cooldown = thr.on_block()
-    log.warning("PX blocked (%d in a row); cooldown %.0fs + re-warm (penalty now %.1fs)",
-                thr.consec, cooldown, thr.penalty)
+    log.info("transient PX block (%d in a row); %ds cooldown + re-warm, then retry "
+             "(this usually recovers — let it run)", thr.consec, int(cooldown))
     time.sleep(cooldown)
     sess.rewarm()
     try:
@@ -196,6 +193,10 @@ def _fetch_patient(sess, url: str, thr: "_Throttle",
             data = sess.fetch(url)
         except PXBlocked:
             data = None
+    if data is None and block_pauses:
+        log.warning("gave up on this product after %d recovery pauses — if this keeps "
+                    "happening the IP is genuinely flagged (rest it or switch networks)",
+                    block_pauses)
     return data
 
 
