@@ -51,8 +51,8 @@ def main() -> None:
     p_run.add_argument("--no-resume", action="store_true",
                        help="do not skip products already in the DB")
     p_run.add_argument("--patient", action="store_true",
-                       help="unattended single-IP mode: slow pace + periodic breaks + "
-                            "long block-recovery pauses so PerimeterX doesn't need a manual solve")
+                       help="slower pace + proactive periodic breaks so PerimeterX escalates "
+                            "less; blocked products are skipped (retried on a later resume run)")
     p_run.add_argument("--pause-every", type=int, default=None,
                        help="take a break every N products (default 60 with --patient)")
     p_run.add_argument("--pause-seconds", type=float, default=None,
@@ -102,16 +102,15 @@ def main() -> None:
     elif args.cmd == "run":
         from .pipeline import run
 
-        # Patient mode: slower pace, periodic breaks, and long block-recovery
-        # pauses so a single-IP run stays hands-off. Individual flags override.
+        # Patient mode: slower pace + proactive periodic breaks so PX doesn't
+        # escalate. Blocked products are SKIPPED (like normal mode) and picked
+        # up on a later resume run — we don't stall retrying one stuck product.
         delay = 0.0 if args.fast else args.delay_s
-        pause_every = pause_seconds = 0
         block_pauses = 0
         if args.patient:
             delay = max(delay, 2.0)
             pause_every = args.pause_every if args.pause_every is not None else 60
             pause_seconds = args.pause_seconds if args.pause_seconds is not None else 240.0
-            block_pauses = 4
         else:
             pause_every = args.pause_every or 0
             pause_seconds = args.pause_seconds or 180.0
