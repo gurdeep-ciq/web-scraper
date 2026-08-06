@@ -158,3 +158,7 @@ class WalmartSession:
 
     def product(self, us_item_id: str) -> dict:
         return self.next_data(f"{WM_HOME}ip/{us_item_id}")
+
+    def reviews(self, us_item_id: str) -> dict:
+        """__NEXT_DATA__ of the dedicated reviews page (full customerReviews)."""
+        return self.next_data(f"{WM_HOME}reviews/product/{us_item_id}")

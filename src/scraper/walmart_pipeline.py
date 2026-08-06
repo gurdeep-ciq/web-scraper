@@ -20,11 +20,12 @@ from .db import (
     record_blocked,
     session_scope,
     upsert_products,
+    upsert_reviews,
 )
 from .models import ScrapeRun, utcnow
 from .pipeline import _Throttle, _stamp
 from .walmart_browse import WM, iter_alcohol_product_ids
-from .walmart_parse import is_alcohol, parse_next_data
+from .walmart_parse import is_alcohol, parse_next_data, parse_reviews
 from .walmart_session import WalmartSession
 
 log = logging.getLogger("scraper.walmart")
@@ -124,6 +125,18 @@ def run_walmart(*, limit: int | None = None, delay_s: float = 1.0, resume: bool 
                         clear_blocked(session, SOURCE, pid)
                 ingested += 1
                 done.add(pid)
+
+                # Reviews live on a separate page; fetch it only if the product
+                # actually has reviews. A block here doesn't fail the product.
+                if product.review_count:
+                    try:
+                        rvs = parse_reviews(sess.reviews(pid), product_id=pid)
+                    except PXBlocked:
+                        rvs = []
+                    if rvs:
+                        with session_scope() as session:
+                            upsert_reviews(session, _stamp([r.model_dump() for r in rvs], SOURCE))
+                    thr.pace()
 
                 if ingested % log_every == 0:
                     log.info("ingested=%d skipped=%d nonalcohol=%d blocked=%d penalty=%.1fs",

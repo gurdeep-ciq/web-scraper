@@ -7,15 +7,16 @@ with .usItemId, .name, .brand, .priceInfo.currentPrice.price, .averageRating,
   ...contentLayout.pageMetadata.pageContext.itemContext.categoryPathName
   ("Home Page/Food/Alcohol/<type>/<subtype>").
 
-Review *text* is not in the product node (loads via a BTF GraphQL) — a later
-add; for now we capture the aggregate rating + count.
+Review *text* isn't in the product node; it's on the dedicated reviews page
+(/reviews/product/<id>) at data.reviews.customerReviews — see parse_reviews().
 """
 
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 
-from .models import ProductIn, VariantIn
+from .models import ProductIn, ReviewIn, VariantIn
 
 WM = "https://www.walmart.com"
 _SIZE_RE = re.compile(
@@ -124,3 +125,42 @@ def parse_next_data(nd: dict, *, alcohol_only: bool = True):
     except Exception:
         variant = None
     return product, variant
+
+
+def _wm_date(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    try:
+        return datetime.strptime(str(s), "%m/%d/%Y").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def parse_reviews(reviews_nd: dict, *, product_id: str) -> list[ReviewIn]:
+    """Parse a /reviews/product/<id> page's __NEXT_DATA__ -> ReviewIn list.
+
+    Reviews live at data.reviews.customerReviews (10 per page): reviewId,
+    rating, reviewTitle, reviewText, userNickname, reviewSubmissionTime,
+    positiveFeedback.
+    """
+    reviews = _dig(reviews_nd, "props", "pageProps", "initialData", "data",
+                   "reviews", "customerReviews") or []
+    out: list[ReviewIn] = []
+    for r in reviews:
+        rid = str(r.get("reviewId") or "").strip()
+        if not rid:
+            continue
+        try:
+            out.append(ReviewIn(
+                review_id=rid,
+                product_id=product_id,
+                rating=r.get("rating"),
+                title=r.get("reviewTitle"),
+                body=r.get("reviewText"),
+                author=r.get("userNickname"),
+                review_date=_wm_date(r.get("reviewSubmissionTime")),
+                helpful_count=r.get("positiveFeedback"),
+            ))
+        except Exception:
+            continue
+    return out
