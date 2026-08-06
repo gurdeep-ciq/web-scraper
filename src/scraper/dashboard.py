@@ -28,46 +28,54 @@ def _scalar(conn, sql, default=0):
     return v if v is not None else default
 
 
-def gather() -> dict:
+def gather(source: str | None = None) -> dict:
+    # Optional per-source filter: `pw`/`vw`/`rw` are WHERE/AND fragments applied
+    # to product (p)/variant (v)/review (r) queries; `prm` carries the param.
+    prm = {"src": source}
+    pw = " AND p.source = :src" if source else ""
+    vw = " AND v.source = :src" if source else ""
+    p_only = " WHERE source = :src" if source else ""
+    p_and = " AND source = :src" if source else ""
+
     with engine.connect() as c:
-        d: dict = {}
-        d["products"] = _scalar(c, f"SELECT count(*) FROM {S}.product")
-        d["variants"] = _scalar(c, f"SELECT count(*) FROM {S}.product_variant")
-        d["reviews"] = _scalar(c, f"SELECT count(*) FROM {S}.review")
-        d["stores"] = _scalar(c, f"SELECT count(*) FROM {S}.store")
-        d["priced"] = _scalar(
-            c, f"SELECT count(*) FROM {S}.product_variant WHERE price IS NOT NULL")
-        d["avg_price"] = _scalar(
-            c, f"SELECT round(avg(price)::numeric,2) FROM {S}.product_variant WHERE price IS NOT NULL")
-        d["max_price"] = _scalar(
-            c, f"SELECT max(price) FROM {S}.product_variant WHERE price IS NOT NULL")
-        d["with_rating"] = _scalar(
-            c, f"SELECT count(*) FROM {S}.product WHERE review_count > 0")
+        def sc(sql):
+            return c.execute(text(sql), prm).scalar() or 0
+
+        d: dict = {"source": source}
+        d["products"] = sc(f"SELECT count(*) FROM {S}.product WHERE 1=1{p_and}")
+        d["variants"] = sc(f"SELECT count(*) FROM {S}.product_variant WHERE 1=1{p_and}")
+        d["reviews"] = sc(f"SELECT count(*) FROM {S}.review WHERE 1=1{p_and}")
+        d["stores"] = sc(f"SELECT count(*) FROM {S}.store WHERE 1=1{p_and}")
+        d["priced"] = sc(f"SELECT count(*) FROM {S}.product_variant WHERE price IS NOT NULL{p_and}")
+        d["avg_price"] = sc(f"SELECT round(avg(price)::numeric,2) FROM {S}.product_variant WHERE price IS NOT NULL{p_and}")
+        d["with_rating"] = sc(f"SELECT count(*) FROM {S}.product WHERE review_count > 0{p_and}")
+        # sources list is always global (drives the tab bar)
         d["sources"] = c.execute(text(
             f"SELECT source, count(*) n FROM {S}.product GROUP BY 1 ORDER BY n DESC")).all()
         d["categories"] = c.execute(text(
             f"SELECT coalesce(category,'(none)'), count(*) n FROM {S}.product "
-            f"GROUP BY 1 ORDER BY n DESC LIMIT 12")).all()
+            f"WHERE 1=1{p_and} GROUP BY 1 ORDER BY n DESC LIMIT 12"), prm).all()
         d["ratings"] = c.execute(text(
             f"SELECT floor(avg_rating)::int b, count(*) n FROM {S}.product "
-            f"WHERE avg_rating > 0 GROUP BY 1 ORDER BY 1")).all()
+            f"WHERE avg_rating > 0{p_and} GROUP BY 1 ORDER BY 1"), prm).all()
         d["runs"] = c.execute(text(
-            f"SELECT id, started_at, finished_at, records_ingested, error_count, notes "
-            f"FROM {S}.scrape_run ORDER BY id DESC LIMIT 8")).all()
-        # Order by ACTUAL stored review rows (not the site's count) so every
-        # listed product has reviews to show when clicked.
+            f"SELECT id, source, started_at, finished_at, records_ingested, error_count, notes "
+            f"FROM {S}.scrape_run WHERE 1=1{p_and} ORDER BY id DESC LIMIT 8"), prm).all()
+        # Order by ACTUAL stored review rows so every listed product has reviews.
         d["top"] = c.execute(text(
             f"SELECT p.source, p.product_id, p.name, p.category, v.size, v.price, p.avg_rating, "
             f"       count(r.*) AS review_count "
             f"FROM {S}.product p "
             f"LEFT JOIN {S}.product_variant v ON v.source=p.source AND v.product_id=p.product_id "
             f"JOIN {S}.review r ON r.source=p.source AND r.product_id=p.product_id "
+            f"WHERE 1=1{pw} "
             f"GROUP BY p.source, p.product_id, p.name, p.category, v.size, v.price, p.avg_rating "
-            f"ORDER BY review_count DESC LIMIT 15")).all()
+            f"ORDER BY review_count DESC LIMIT 15"), prm).all()
         d["latest_reviews"] = c.execute(text(
             f"SELECT r.source, r.product_id, p.name, r.rating, r.title, r.body, r.author, r.review_date "
             f"FROM {S}.review r JOIN {S}.product p ON p.source=r.source AND p.product_id=r.product_id "
-            f"ORDER BY r.review_date DESC NULLS LAST LIMIT 12")).all()
+            f"WHERE 1=1{pw} "
+            f"ORDER BY r.review_date DESC NULLS LAST LIMIT 12"), prm).all()
         return d
 
 
@@ -125,10 +133,23 @@ def _review_card(r, *, show_product=False) -> str:
     )
 
 
+def _tabs(active: str | None, sources: list) -> str:
+    items = [("All", "/")]
+    items += [(s, f"/?source={s}") for s, _ in sources]
+    out = []
+    for label, href in items:
+        is_active = (active == label) or (active is None and label == "All")
+        cls = "tab active" if is_active else "tab"
+        out.append(f'<a class="{cls}" href="{href}">{html.escape(label)}</a>')
+    return '<nav class="tabs">' + "".join(out) + "</nav>"
+
+
 def render(d: dict) -> str:
     cov = (d["priced"] / d["variants"] * 100) if d["variants"] else 0
     cat_max = max([n for _, n in d["categories"]], default=1)
     rat_max = max([n for _, n in d["ratings"]], default=1)
+    active = d.get("source")
+    tabs = _tabs(active, d["sources"])
 
     cards = "".join(
         f'<div class="card"><div class="num">{v}</div><div class="cap">{k}</div></div>'
@@ -194,12 +215,18 @@ def render(d: dict) -> str:
   .rh {{ font-size:13px; margin-bottom:4px; }} .stars {{ color:#f59e0b; letter-spacing:1px; }}
   .by {{ color:#8a8a95; }} .rb {{ font-size:13px; color:#c7c7d0; line-height:1.5; }}
   .back {{ font-size:13px; }}
+  .tabs {{ display:flex; gap:8px; margin-top:14px; flex-wrap:wrap; }}
+  .tab {{ padding:6px 14px; border:1px solid #26262e; border-radius:999px; font-size:13px;
+         color:#c7c7d0; background:#17171f; }}
+  .tab.active {{ background:#7c3aed; border-color:#7c3aed; color:#fff; }}
+  .tab:hover {{ text-decoration:none; border-color:#7c3aed; }}
 </style></head><body>
 <header><h1>\U0001f377 Web Scraper — Ingestion Dashboard</h1>
-<div class="sub">schema <code>{S}</code> &middot; auto-refreshes every 15s</div></header>
+<div class="sub">schema <code>{S}</code> &middot; {("source: <b>"+html.escape(active)+"</b>") if active else "all sources"} &middot; auto-refreshes every 15s</div>
+{tabs}</header>
 <main>
   <div class="cards">{cards}</div>
-  <section><h2>Products by source</h2>{srcs}</section>
+  {"" if active else f'<section><h2>Products by source</h2>{srcs}</section>'}
   <section><h2>Products by category</h2>{cats or '<div class="sub">no data yet</div>'}</section>
   <section><h2>Rating distribution</h2>{rats or '<div class="sub">no ratings yet</div>'}</section>
   <section><h2>Top-reviewed products <span class="sub">(click a name for its reviews)</span></h2>
@@ -265,7 +292,8 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             if parsed.path in ("/", "/index.html"):
-                body = render(gather())
+                src = (parse_qs(parsed.query).get("source") or [None])[0]
+                body = render(gather(src))
             elif parsed.path == "/product":
                 q = parse_qs(parsed.query)
                 pid = (q.get("id") or [""])[0]
