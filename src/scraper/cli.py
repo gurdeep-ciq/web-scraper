@@ -102,6 +102,18 @@ def main() -> None:
         from .pipeline import backfill_reviews
 
         print(backfill_reviews(source=args.source, limit=args.limit, delay_s=args.delay_s))
+    elif args.cmd == "run" and args.source == "walmart":
+        from .walmart_pipeline import run_walmart
+
+        pause_every = (args.pause_every if args.pause_every is not None
+                       else (60 if args.patient else 0))
+        pause_seconds = (args.pause_seconds if args.pause_seconds is not None
+                         else (240.0 if args.patient else 180.0))
+        print(run_walmart(limit=args.limit,
+                          delay_s=(2.0 if args.patient else args.delay_s),
+                          resume=not args.no_resume,
+                          pause_every=pause_every, pause_seconds=pause_seconds,
+                          warm_seconds=args.warm_wait, retry_blocked=args.retry_blocked))
     elif args.cmd == "run":
         from .pipeline import run
 
