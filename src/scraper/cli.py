@@ -53,6 +53,9 @@ def main() -> None:
     p_run.add_argument("--retry-blocked", action="store_true",
                        help="also retry products that were blocked on earlier runs "
                             "(by default those are skipped)")
+    p_run.add_argument("--store", default=None,
+                       help="walmart: pin an assortmentStoreId to widen the location-gated "
+                            "alcohol assortment")
     p_run.add_argument("--patient", action="store_true",
                        help="slower pace + proactive periodic breaks so PerimeterX escalates "
                             "less; blocked products are skipped (retried on a later resume run)")
@@ -113,7 +116,8 @@ def main() -> None:
                           delay_s=(2.0 if args.patient else args.delay_s),
                           resume=not args.no_resume,
                           pause_every=pause_every, pause_seconds=pause_seconds,
-                          warm_seconds=args.warm_wait, retry_blocked=args.retry_blocked))
+                          warm_seconds=args.warm_wait, retry_blocked=args.retry_blocked,
+                          store_id=args.store))
     elif args.cmd == "run":
         from .pipeline import run
 
