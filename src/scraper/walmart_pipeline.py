@@ -13,6 +13,7 @@ import time
 from .browser import PXBlocked
 from .db import (
     clear_blocked,
+    excluded_product_ids,
     existing_blocked_ids,
     existing_product_ids,
     insert_variants,
@@ -23,7 +24,7 @@ from .db import (
 from .models import ScrapeRun, utcnow
 from .pipeline import _Throttle, _stamp
 from .walmart_browse import WM, iter_alcohol_product_ids
-from .walmart_parse import parse_next_data
+from .walmart_parse import is_alcohol, parse_next_data
 from .walmart_session import WalmartSession
 
 log = logging.getLogger("scraper.walmart")
@@ -56,10 +57,15 @@ def run_walmart(*, limit: int | None = None, delay_s: float = 1.0, resume: bool 
     thr = _Throttle(base=delay_s)
     done = existing_product_ids(SOURCE) if resume else set()
     blocked_ids = set() if retry_blocked else existing_blocked_ids(SOURCE)
+    # Non-alcohol products are remembered and ALWAYS skipped (never re-fetched),
+    # so we don't burn a page load re-discovering they're not alcohol each run.
+    excluded_ids = excluded_product_ids(SOURCE)
     if done:
         log.info("resume: %d walmart products already in DB will be skipped", len(done))
     if blocked_ids:
         log.info("skipping %d previously-blocked (use --retry-blocked)", len(blocked_ids))
+    if excluded_ids:
+        log.info("skipping %d known non-alcohol products", len(excluded_ids))
 
     with session_scope() as session:
         row = ScrapeRun(source=SOURCE, category="alcohol")
@@ -75,7 +81,7 @@ def run_walmart(*, limit: int | None = None, delay_s: float = 1.0, resume: bool 
                 log.warning("warm-up still blocked; the IP may be hot — continuing")
 
             for pid in iter_alcohol_product_ids(sess, max_pages=max_pages):
-                if pid in done or pid in blocked_ids:
+                if pid in done or pid in blocked_ids or pid in excluded_ids:
                     skipped += 1
                     continue
                 try:
@@ -92,9 +98,21 @@ def run_walmart(*, limit: int | None = None, delay_s: float = 1.0, resume: bool 
                     continue
                 thr.on_success()
 
-                product, variant = parse_next_data(nd, alcohol_only=True)
+                # Parse without the filter so we can tell "not alcohol" (remember
+                # + skip forever) apart from "unparseable" (a real error).
+                product, variant = parse_next_data(nd, alcohol_only=False)
+                data = (nd.get("props", {}).get("pageProps", {})
+                        .get("initialData", {}).get("data", {}))
                 if product is None:
-                    nonalcohol += 1  # a mixer/accessory or unparseable — skip
+                    errors += 1
+                    thr.pace()
+                    continue
+                if not is_alcohol(data):
+                    nonalcohol += 1
+                    excluded_ids.add(pid)
+                    with session_scope() as session:
+                        record_blocked(session, SOURCE, pid, f"{WM}/ip/{pid}",
+                                       reason="nonalcohol")
                     thr.pace()
                     continue
 

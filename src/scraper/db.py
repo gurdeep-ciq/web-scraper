@@ -77,12 +77,28 @@ def existing_product_ids(source: str) -> set[str]:
 
 
 def existing_blocked_ids(source: str) -> set[str]:
-    """product_ids previously blocked for a source — skipped unless retrying."""
+    """PX-blocked product_ids for a source (excludes permanent exclusions like
+    non-alcohol) — skipped unless --retry-blocked."""
     with SessionLocal() as session:
         return {
             row[0]
             for row in session.query(BlockedProduct.product_id).filter(
-                BlockedProduct.source == source
+                BlockedProduct.source == source,
+                (BlockedProduct.last_reason.is_(None))
+                | (BlockedProduct.last_reason != "nonalcohol"),
+            )
+        }
+
+
+def excluded_product_ids(source: str, reason: str = "nonalcohol") -> set[str]:
+    """product_ids permanently excluded by classification (e.g. non-alcohol) —
+    always skipped so they're never re-fetched, even with --retry-blocked."""
+    with SessionLocal() as session:
+        return {
+            row[0]
+            for row in session.query(BlockedProduct.product_id).filter(
+                BlockedProduct.source == source,
+                BlockedProduct.last_reason == reason,
             )
         }
 
