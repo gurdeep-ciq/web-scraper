@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from sqlalchemy import text
@@ -82,6 +83,14 @@ def gather(source: str | None = None) -> dict:
             f"FROM {S}.review r JOIN {S}.product p ON p.source=r.source AND p.product_id=r.product_id "
             f"WHERE 1=1{pw} "
             f"ORDER BY r.review_date DESC NULLS LAST LIMIT 12"), prm).all()
+        # Raw preview: ~20 products with every column (one variant each).
+        d["preview"] = c.execute(text(
+            f"SELECT DISTINCT ON (p.product_id) p.source, p.product_id, p.name, p.brand, "
+            f"p.category, p.subcategory, v.size, v.price, v.store_id, v.stock, v.in_stock, "
+            f"p.avg_rating, p.review_count, p.is_new, p.attributes, p.ai_review_summary, p.url "
+            f"FROM {S}.product p "
+            f"LEFT JOIN {S}.product_variant v ON v.source=p.source AND v.product_id=p.product_id "
+            f"WHERE 1=1{pw} ORDER BY p.product_id LIMIT 20"), prm).mappings().all()
         return d
 
 
@@ -120,6 +129,33 @@ def gather_stores() -> dict:
             f"SELECT source, store_id, name, address, city, state, zip, phone "
             f"FROM {S}.store ORDER BY state NULLS LAST, city NULLS LAST")).all()
         return d
+
+
+_PREVIEW_COLS = ["source", "product_id", "name", "brand", "category", "subcategory",
+                 "size", "price", "store_id", "stock", "in_stock", "avg_rating",
+                 "review_count", "is_new", "attributes", "ai_review_summary", "url"]
+
+
+def _cell(col, val) -> str:
+    if val is None:
+        return ""
+    if col == "attributes":
+        val = json.dumps(val)
+    s = str(val)
+    if len(s) > 80:
+        s = s[:80] + "…"
+    return html.escape(s)
+
+
+def _preview_table(rows) -> str:
+    if not rows:
+        return '<div class="sub">no products yet — run the scraper</div>'
+    head = "".join(f"<th>{c}</th>" for c in _PREVIEW_COLS)
+    body = "".join(
+        "<tr>" + "".join(f"<td>{_cell(c, r.get(c))}</td>" for c in _PREVIEW_COLS) + "</tr>"
+        for r in rows
+    )
+    return f'<div class="scroll"><table class="wide"><tr>{head}</tr>{body}</table></div>'
 
 
 def _bar(label, n, total, color="#7c3aed"):
@@ -213,6 +249,7 @@ def render(d: dict) -> str:
     )
     latest = "".join(_review_card(r, show_product=True) for r in d["latest_reviews"]) \
         or '<div class="sub">no reviews yet</div>'
+    preview = _preview_table(d["preview"])
 
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="refresh" content="15">
@@ -248,12 +285,16 @@ def render(d: dict) -> str:
          color:#c7c7d0; background:#17171f; }}
   .tab.active {{ background:#7c3aed; border-color:#7c3aed; color:#fff; }}
   .tab:hover {{ text-decoration:none; border-color:#7c3aed; }}
+  .scroll {{ overflow-x:auto; }}
+  table.wide {{ font-size:12px; }}
+  table.wide th, table.wide td {{ white-space:nowrap; max-width:300px; overflow:hidden; text-overflow:ellipsis; }}
 </style></head><body>
 <header><h1>\U0001f377 Web Scraper — Ingestion Dashboard</h1>
 <div class="sub">schema <code>{S}</code> &middot; {("source: <b>"+html.escape(active)+"</b>") if active else "all sources"} &middot; auto-refreshes every 15s</div>
 {tabs}</header>
 <main>
   <div class="cards">{cards}</div>
+  <section><h2>Data preview — {len(d['preview'])} products, all columns</h2>{preview}</section>
   {"" if active else f'<section><h2>Products by source</h2>{srcs}</section>'}
   <section><h2>Products by category</h2>{cats or '<div class="sub">no data yet</div>'}</section>
   <section><h2>Products by subcategory</h2>{subs}</section>
