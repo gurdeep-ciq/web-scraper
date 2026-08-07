@@ -142,6 +142,7 @@ def upsert_products(session: Session, rows: list[dict]) -> int:
             "ai_review_summary",
             "avg_rating",
             "review_count",
+            "is_new",
             "attributes",
             "last_seen",
         )

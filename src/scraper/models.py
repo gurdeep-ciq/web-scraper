@@ -60,6 +60,7 @@ class Product(Base):
     ai_review_summary: Mapped[str | None] = mapped_column(Text)
     avg_rating: Mapped[float | None] = mapped_column(Float)
     review_count: Mapped[int | None] = mapped_column(Integer)
+    is_new: Mapped[bool | None] = mapped_column(Boolean)  # newly-listed (no reviews yet)
     # Per-product "Product Details" attributes (Country, Spirits Type, Taste,
     # Varietal, Region, ABV, ...) — keys vary by product, so keep them flexible.
     attributes: Mapped[dict | None] = mapped_column(JSONB)
@@ -82,6 +83,7 @@ class ProductVariant(Base):
     size: Mapped[str | None] = mapped_column(String)
     price: Mapped[float | None] = mapped_column(Float)
     in_stock: Mapped[bool | None] = mapped_column(Boolean)
+    stock: Mapped[int | None] = mapped_column(Integer)  # quantity available at store
 
 
 class Review(Base):
@@ -171,6 +173,7 @@ class ProductIn(BaseModel):
     ai_review_summary: str | None = None
     avg_rating: float | None = Field(default=None, ge=0, le=5)
     review_count: int | None = Field(default=None, ge=0)
+    is_new: bool | None = None
     attributes: dict | None = None
 
     @field_validator("name")
@@ -188,6 +191,7 @@ class VariantIn(BaseModel):
     size: str | None = None
     price: float | None = Field(default=None, ge=0)
     in_stock: bool | None = None
+    stock: int | None = Field(default=None, ge=0)
 
 
 class ReviewIn(BaseModel):

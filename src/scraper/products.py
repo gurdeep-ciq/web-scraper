@@ -33,6 +33,27 @@ def _category_of(categories: list[dict], type_: str) -> str | None:
     return None
 
 
+def _hierarchy(payload: dict) -> tuple[str | None, str | None]:
+    """(category, subcategory) from breadcrumbs: Home > <beverage type> >
+    <product type> > ... So category = beverage type (Spirits/Wine/Beer/RTD/
+    THC/Non-Alcoholic), subcategory = product type (e.g. American Whiskey)."""
+    crumbs = [c for c in payload.get("breadCrumbs", [])
+              if c.get("url") and c.get("name") and c.get("name") != "Home"]
+    cat = crumbs[0]["name"] if crumbs else None
+    sub = crumbs[1]["name"] if len(crumbs) > 1 else None
+    return cat, sub
+
+
+def _stock(product: dict) -> int | None:
+    levels = product.get("stockLevel")
+    if isinstance(levels, list) and levels:
+        try:
+            return int(levels[0].get("stock"))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def _size(product: dict) -> str | None:
     # packageDescription is the authoritative page-level descriptor tied to the
     # priced skuId (e.g. "750ml Bottle", and for beer it includes the pack
@@ -104,17 +125,19 @@ def parse_product(
     if url and not url.startswith("http"):
         url = f"{config.base_url}{url}"
 
+    cat, sub = _hierarchy(payload)
     try:
         product = ProductIn(
             product_id=pid,
             name=payload.get("name", ""),
             brand=(payload.get("brand") or {}).get("name"),
-            category=_category_of(categories, "PRODUCT_TYPE") or payload.get("department"),
-            subcategory=_category_of(categories, "VARIETAL_TYPE"),
+            category=cat or payload.get("department"),
+            subcategory=sub or _category_of(categories, "PRODUCT_TYPE"),
             url=url,
             ai_review_summary=ai_review_summary or None,
             avg_rating=payload.get("customerAverageRating"),
             review_count=payload.get("customerReviewsCount"),
+            is_new=payload.get("itemNew"),
             attributes=_attributes(payload),
         )
     except Exception:
@@ -127,6 +150,7 @@ def parse_product(
             size=_size(payload),
             price=_first_price(payload),
             in_stock=_in_stock(payload),
+            stock=_stock(payload),
         )
     except Exception:
         variant = None
