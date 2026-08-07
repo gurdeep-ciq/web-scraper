@@ -83,7 +83,7 @@ def is_alcohol(data: dict) -> bool:
     return True
 
 
-def parse_next_data(nd: dict, *, alcohol_only: bool = True):
+def parse_next_data(nd: dict, *, alcohol_only: bool = True, store_id: str = ""):
     """__NEXT_DATA__ dict -> (ProductIn | None, VariantIn | None)."""
     data = _dig(nd, "props", "pageProps", "initialData", "data")
     if not data:
@@ -118,6 +118,7 @@ def parse_next_data(nd: dict, *, alcohol_only: bool = True):
         variant = VariantIn(
             variant_id=pid,
             product_id=pid,
+            store_id=store_id or "",
             size=size_m.group(1) if size_m else None,
             price=float(price) if price is not None else None,
             in_stock=(prod.get("availabilityStatus") == "IN_STOCK"),

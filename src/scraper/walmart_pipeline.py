@@ -101,7 +101,8 @@ def run_walmart(*, limit: int | None = None, delay_s: float = 1.0, resume: bool 
 
                 # Parse without the filter so we can tell "not alcohol" (remember
                 # + skip forever) apart from "unparseable" (a real error).
-                product, variant = parse_next_data(nd, alcohol_only=False)
+                product, variant = parse_next_data(nd, alcohol_only=False,
+                                                   store_id=store_id or "")
                 data = (nd.get("props", {}).get("pageProps", {})
                         .get("initialData", {}).get("data", {}))
                 if product is None:

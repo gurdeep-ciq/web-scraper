@@ -153,6 +153,7 @@ def parse_product(
         variant = VariantIn(
             variant_id=sku_id,
             product_id=pid,
+            store_id=str(payload.get("storeId") or ""),
             size=_size(payload),
             price=_first_price(payload),
             in_stock=_in_stock(payload),

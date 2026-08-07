@@ -159,7 +159,7 @@ def insert_variants(session: Session, rows: list[dict]) -> int:
     if not rows:
         return 0
     stmt = pg_insert(ProductVariant).values(rows).on_conflict_do_nothing(
-        index_elements=["source", "variant_id", "captured_at"]
+        index_elements=["source", "variant_id", "store_id", "captured_at"]
     )
     session.execute(stmt)
     return len(rows)

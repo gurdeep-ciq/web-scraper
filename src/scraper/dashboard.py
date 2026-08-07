@@ -89,7 +89,7 @@ def gather_product(source: str, pid: str) -> dict | None:
         if not prod:
             return None
         variants = c.execute(text(
-            f"SELECT size, price, in_stock FROM {S}.product_variant "
+            f"SELECT size, price, in_stock, store_id FROM {S}.product_variant "
             f"WHERE source = :s AND product_id = :p ORDER BY price NULLS LAST"),
             {"s": source, "p": pid}).all()
         reviews = c.execute(text(
@@ -319,9 +319,10 @@ def render_product(pv: dict) -> str:
     variants = "".join(
         f"<tr><td>{html.escape(v.size or '')}</td>"
         f"<td>{('$'+str(v.price)) if v.price is not None else '—'}</td>"
-        f"<td>{'in stock' if v.in_stock else ('out' if v.in_stock is False else '?')}</td></tr>"
+        f"<td>{'in stock' if v.in_stock else ('out' if v.in_stock is False else '?')}</td>"
+        f"<td>{html.escape(v.store_id or '')}</td></tr>"
         for v in pv["variants"]
-    ) or "<tr><td colspan=3 class='sub'>no variants</td></tr>"
+    ) or "<tr><td colspan=4 class='sub'>no variants</td></tr>"
     reviews = "".join(_review_card(r) for r in pv["reviews"]) \
         or '<div class="sub">no reviews stored for this product</div>'
     summ = (f'<section><h2>AI review summary</h2><div class="rb">'
@@ -359,7 +360,7 @@ def render_product(pv: dict) -> str:
 </header>
 <main>
   <section><h2>Sizes &amp; price</h2><table>
-    <tr><th>size</th><th>price</th><th>stock</th></tr>{variants}</table></section>
+    <tr><th>size</th><th>price</th><th>stock</th><th>store</th></tr>{variants}</table></section>
   <section><h2>Product details</h2>{details}</section>
   {summ}
   <section><h2>Reviews ({len(pv['reviews'])})</h2>{reviews}</section>

@@ -76,6 +76,9 @@ class ProductVariant(Base):
 
     source: Mapped[str] = mapped_column(String, primary_key=True)
     variant_id: Mapped[str] = mapped_column(String, primary_key=True)
+    # the store the price/availability was captured at ('' if not store-scoped)
+    # — part of the key so the same product holds a price row per store.
+    store_id: Mapped[str] = mapped_column(String, primary_key=True, default="")
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, primary_key=True
     )
@@ -192,6 +195,7 @@ class ProductIn(BaseModel):
 class VariantIn(BaseModel):
     variant_id: str
     product_id: str
+    store_id: str = ""
     size: str | None = None
     price: float | None = Field(default=None, ge=0)
     in_stock: bool | None = None
