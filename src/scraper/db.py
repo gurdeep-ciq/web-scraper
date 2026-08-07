@@ -76,29 +76,33 @@ def existing_product_ids(source: str) -> set[str]:
         }
 
 
+# Permanent classification exclusions — always skipped, never retried.
+PERMANENT_EXCLUSIONS = ("nonalcohol", "out_of_scope")
+
+
 def existing_blocked_ids(source: str) -> set[str]:
-    """PX-blocked product_ids for a source (excludes permanent exclusions like
-    non-alcohol) — skipped unless --retry-blocked."""
+    """PX-blocked product_ids for a source (excludes permanent exclusions) —
+    skipped unless --retry-blocked."""
     with SessionLocal() as session:
         return {
             row[0]
             for row in session.query(BlockedProduct.product_id).filter(
                 BlockedProduct.source == source,
                 (BlockedProduct.last_reason.is_(None))
-                | (BlockedProduct.last_reason != "nonalcohol"),
+                | (BlockedProduct.last_reason.notin_(PERMANENT_EXCLUSIONS)),
             )
         }
 
 
-def excluded_product_ids(source: str, reason: str = "nonalcohol") -> set[str]:
-    """product_ids permanently excluded by classification (e.g. non-alcohol) —
-    always skipped so they're never re-fetched, even with --retry-blocked."""
+def excluded_product_ids(source: str) -> set[str]:
+    """product_ids permanently excluded by classification (non-alcohol /
+    out-of-scope) — always skipped so they're never re-fetched."""
     with SessionLocal() as session:
         return {
             row[0]
             for row in session.query(BlockedProduct.product_id).filter(
                 BlockedProduct.source == source,
-                BlockedProduct.last_reason == reason,
+                BlockedProduct.last_reason.in_(PERMANENT_EXCLUSIONS),
             )
         }
 

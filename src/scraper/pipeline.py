@@ -21,6 +21,7 @@ import time
 from .browser import PXBlocked, TotalWineSession
 from .db import (
     clear_blocked,
+    excluded_product_ids,
     existing_blocked_ids,
     existing_product_ids,
     insert_variants,
@@ -31,7 +32,7 @@ from .db import (
     upsert_stores,
 )
 from .models import ScrapeRun, utcnow
-from .products import parse_product
+from .products import in_scope, parse_product
 from .reviews import parse_reviews, parse_summary
 from .sitemaps import iter_product_urls, iter_stores, store_api_url, store_from_json
 
@@ -308,7 +309,7 @@ def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
     Press & Hold; `block_pauses` gives blocked products escalating multi-minute
     retries instead of skipping. This trades speed for not needing a human.
     """
-    ingested = skipped = errors = blocked = 0
+    ingested = skipped = errors = blocked = out_of_scope = 0
     thr = _Throttle(base=delay_s)
     done = existing_product_ids(source) if resume else set()
     if done:
@@ -320,6 +321,18 @@ def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
     if blocked_ids:
         log.info("skipping %d previously-blocked products (use --retry-blocked to retry)",
                  len(blocked_ids))
+    # Permanently-excluded (out-of-scope: gifts/cigars/accessories) — never re-fetch.
+    excluded_ids = excluded_product_ids(source)
+    if excluded_ids:
+        log.info("skipping %d out-of-scope products", len(excluded_ids))
+    # Known store ids — to auto-enrich any store a product references but that
+    # the store-locator sitemap didn't include.
+    from sqlalchemy import text as _t
+    from .config import config as _cfg
+    from .db import SessionLocal as _SL
+    with _SL() as _s:
+        known_stores = {r[0] for r in _s.execute(_t(
+            f"SELECT store_id FROM {_cfg.db_schema}.store WHERE source=:s"), {"s": source})}
 
     with session_scope() as session:
         run_row = ScrapeRun(source=source, category="sitemap")
@@ -344,7 +357,7 @@ def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
                             "Continuing, but expect blocks.", warm_seconds)
             for url in iter_product_urls(limit=limit, max_sitemaps=max_sitemaps):
                 code = _url_code(url)
-                if code and (code in done or code in blocked_ids):
+                if code and (code in done or code in blocked_ids or code in excluded_ids):
                     skipped += 1
                     continue
 
@@ -364,6 +377,17 @@ def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
                     continue
                 thr.on_success()
 
+                pj = data.get("product") or {}
+                # Out of scope (gifts / cigars / accessories) — remember + skip.
+                if pj and not in_scope(pj):
+                    out_of_scope += 1
+                    if code:
+                        excluded_ids.add(code)
+                        with session_scope() as session:
+                            record_blocked(session, source, code, url, reason="out_of_scope")
+                    thr.pace()
+                    continue
+
                 if _persist_one(data, source):
                     ingested += 1
                     if code:
@@ -371,12 +395,20 @@ def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
                         if retry_blocked:
                             with session_scope() as session:
                                 clear_blocked(session, source, code)
+                    # Auto-enrich a store we haven't catalogued yet.
+                    sid = str(pj.get("storeId") or "")
+                    if sid and sid not in known_stores:
+                        det = store_from_json(sid, sess.get_json(store_api_url(sid)))
+                        if det:
+                            with session_scope() as session:
+                                upsert_stores(session, _stamp([det.model_dump()], source))
+                        known_stores.add(sid)  # add regardless so we don't retry
                 else:
                     errors += 1
 
                 if ingested and ingested % log_every == 0:
-                    log.info("ingested=%d skipped=%d errors=%d blocked=%d penalty=%.1fs",
-                             ingested, skipped, errors, blocked, thr.penalty)
+                    log.info("ingested=%d skipped=%d out_of_scope=%d errors=%d blocked=%d penalty=%.1fs",
+                             ingested, skipped, out_of_scope, errors, blocked, thr.penalty)
 
                 # Patient mode: periodic proactive break so PX's score decays
                 # before it escalates to a Press & Hold.
@@ -391,9 +423,9 @@ def run(*, source: str = DEFAULT_SOURCE, limit: int | None = None,
             row.finished_at = utcnow()
             row.records_ingested = ingested
             row.error_count = errors + blocked
-            row.notes = f"skipped={skipped} blocked={blocked}"
+            row.notes = f"skipped={skipped} out_of_scope={out_of_scope} blocked={blocked}"
 
-    summary = {"ingested": ingested, "skipped": skipped, "errors": errors,
-               "blocked": blocked, "run_id": run_id}
+    summary = {"ingested": ingested, "skipped": skipped, "out_of_scope": out_of_scope,
+               "errors": errors, "blocked": blocked, "run_id": run_id}
     log.info("run complete: %s", summary)
     return summary

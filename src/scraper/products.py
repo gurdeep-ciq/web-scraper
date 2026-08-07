@@ -44,6 +44,21 @@ def _hierarchy(payload: dict) -> tuple[str | None, str | None]:
     return cat, sub
 
 
+# Top-level categories that aren't beverage alcohol (Gauri's scope excludes
+# gifts/accessories/cigars). Non-Alcoholic IS in scope, so it's not here.
+_OUT_OF_SCOPE_CATEGORIES = {
+    "gifts", "gifts & accessories", "misc", "accessories", "barware",
+    "glassware", "bar accessories", "food", "cigars",
+}
+
+
+def in_scope(payload: dict) -> bool:
+    """True if the product is a beverage (wine/spirits/beer/RTD/THC/non-alc) —
+    excludes gifts, cigars (Misc), and accessories."""
+    cat, _ = _hierarchy(payload)
+    return (cat or "").strip().lower() not in _OUT_OF_SCOPE_CATEGORIES
+
+
 def _stock(product: dict) -> int | None:
     levels = product.get("stockLevel")
     if isinstance(levels, list) and levels:
