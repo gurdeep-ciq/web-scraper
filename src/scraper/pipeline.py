@@ -96,20 +96,20 @@ def sync_stores(source: str = DEFAULT_SOURCE, resume: bool = True) -> dict:
         done = {r[0] for r in s.execute(_text(
             f"SELECT store_id FROM {_cfg.db_schema}.store "
             f"WHERE source=:src AND zip IS NOT NULL"), {"src": source})} if resume else set()
-    # seed basic records so every store at least exists, then enrich
-    with session_scope() as session:
-        upsert_stores(session, _stamp([s.model_dump() for s in stores], source))
 
+    # Only touch stores not already enriched — DON'T blanket-seed, which would
+    # overwrite already-enriched zip/address with the basic record's nulls.
     todo = [s for s in stores if s.store_id not in done]
-    log.info("store enrichment: %d done, %d to fetch", len(done), len(todo))
+    log.info("store enrichment: %d already enriched, %d to fetch", len(done), len(todo))
     enriched = 0
     with TotalWineSession() as sess:
         sess.warm_up(60)
         for i, s in enumerate(todo, 1):
             det = store_from_json(s.store_id, sess.get_json(store_api_url(s.store_id)))
+            rec = det or s  # full detail, else the basic record so the store exists
+            with session_scope() as session:
+                upsert_stores(session, _stamp([rec.model_dump()], source))
             if det:
-                with session_scope() as session:
-                    upsert_stores(session, _stamp([det.model_dump()], source))
                 enriched += 1
             if i % 25 == 0:
                 log.info("store enrichment: %d/%d (%d ok)", i, len(todo), enriched)
