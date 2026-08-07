@@ -99,6 +99,23 @@ def gather_product(source: str, pid: str) -> dict | None:
         return {"product": prod, "variants": variants, "reviews": reviews}
 
 
+def gather_stores() -> dict:
+    with engine.connect() as c:
+        d: dict = {}
+        d["total"] = c.execute(text(f"SELECT count(*) FROM {S}.store")).scalar() or 0
+        d["with_zip"] = c.execute(text(
+            f"SELECT count(*) FROM {S}.store WHERE zip IS NOT NULL")).scalar() or 0
+        d["states"] = c.execute(text(
+            f"SELECT count(DISTINCT state) FROM {S}.store WHERE state IS NOT NULL")).scalar() or 0
+        d["by_state"] = c.execute(text(
+            f"SELECT coalesce(state,'?') s, count(*) n FROM {S}.store "
+            f"GROUP BY 1 ORDER BY n DESC")).all()
+        d["rows"] = c.execute(text(
+            f"SELECT source, store_id, name, address, city, state, zip, phone "
+            f"FROM {S}.store ORDER BY state NULLS LAST, city NULLS LAST")).all()
+        return d
+
+
 def _bar(label, n, total, color="#7c3aed"):
     pct = (n / total * 100) if total else 0
     return (
@@ -136,6 +153,7 @@ def _review_card(r, *, show_product=False) -> str:
 def _tabs(active: str | None, sources: list) -> str:
     items = [("All", "/")]
     items += [(s, f"/?source={s}") for s, _ in sources]
+    items.append(("Stores", "/stores"))
     out = []
     for label, href in items:
         is_active = (active == label) or (active is None and label == "All")
@@ -239,6 +257,63 @@ def render(d: dict) -> str:
 </main></body></html>"""
 
 
+_STYLE = """
+  * { box-sizing: border-box; }
+  body { font-family:-apple-system,system-ui,sans-serif; margin:0; background:#0f0f14; color:#e7e7ea; }
+  header { padding:20px 28px; border-bottom:1px solid #26262e; }
+  h1 { font-size:18px; margin:0; } .sub { color:#8a8a95; font-size:13px; margin-top:4px; }
+  main { padding:24px 28px; max-width:1100px; margin:0 auto; }
+  .cards { display:flex; flex-wrap:wrap; gap:14px; margin-bottom:28px; }
+  .card { background:#17171f; border:1px solid #26262e; border-radius:12px; padding:16px 20px; min-width:120px; }
+  .num { font-size:26px; font-weight:700; } .cap { color:#8a8a95; font-size:12px; margin-top:2px; text-transform:uppercase; letter-spacing:.04em; }
+  section { background:#17171f; border:1px solid #26262e; border-radius:12px; padding:18px 20px; margin-bottom:22px; }
+  h2 { font-size:14px; margin:0 0 14px; color:#c7c7d0; text-transform:uppercase; letter-spacing:.05em; }
+  .row { display:flex; align-items:center; gap:12px; margin:6px 0; }
+  .lbl { width:190px; font-size:13px; color:#c7c7d0; } .val { width:44px; text-align:right; font-variant-numeric:tabular-nums; font-size:13px; }
+  .track { flex:1; background:#26262e; border-radius:6px; height:16px; overflow:hidden; }
+  .fill { height:100%; border-radius:6px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:7px 10px; border-bottom:1px solid #26262e; }
+  th { color:#8a8a95; font-weight:600; text-transform:uppercase; font-size:11px; letter-spacing:.04em; }
+  a { color:#a78bfa; text-decoration:none; } a:hover { text-decoration:underline; }
+  .tabs { display:flex; gap:8px; margin-top:14px; flex-wrap:wrap; }
+  .tab { padding:6px 14px; border:1px solid #26262e; border-radius:999px; font-size:13px; color:#c7c7d0; background:#17171f; }
+  .tab.active { background:#7c3aed; border-color:#7c3aed; color:#fff; }
+  .tab:hover { text-decoration:none; border-color:#7c3aed; }
+"""
+
+
+def render_stores(d: dict, sources: list) -> str:
+    st_max = max([n for _, n in d["by_state"]], default=1)
+    cards = "".join(
+        f'<div class="card"><div class="num">{v}</div><div class="cap">{k}</div></div>'
+        for k, v in [("Stores", d["total"]), ("With address/zip", d["with_zip"]),
+                     ("States", d["states"])]
+    )
+    bars = "".join(_bar(s, n, st_max, "#10b981") for s, n in d["by_state"]) \
+        or '<div class="sub">no stores yet — run sync-stores</div>'
+    table = "".join(
+        f"<tr><td>{html.escape(r.state or '')}</td><td>{html.escape(r.name or '')}</td>"
+        f"<td>{html.escape(r.address or '')}</td><td>{html.escape(r.city or '')}</td>"
+        f"<td>{html.escape(r.zip or '')}</td><td>{html.escape(r.phone or '')}</td>"
+        f"<td>{html.escape(str(r.store_id))}</td></tr>"
+        for r in d["rows"]
+    )
+    return f"""<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="30"><title>Web Scraper — Stores</title>
+<style>{_STYLE}</style></head><body>
+<header><h1>\U0001f377 Web Scraper — Stores</h1>
+<div class="sub">schema <code>{S}</code> &middot; store locator dataset</div>
+{_tabs("Stores", sources)}</header>
+<main>
+  <div class="cards">{cards}</div>
+  <section><h2>Stores by state</h2>{bars}</section>
+  <section><h2>All stores ({d['total']})</h2>
+    <table><tr><th>state</th><th>name</th><th>address</th><th>city</th><th>zip</th><th>phone</th><th>id</th></tr>{table}</table>
+  </section>
+</main></body></html>"""
+
+
 def render_product(pv: dict) -> str:
     p = pv["product"]
     variants = "".join(
@@ -300,6 +375,8 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path in ("/", "/index.html"):
                 src = (parse_qs(parsed.query).get("source") or [None])[0]
                 body = render(gather(src))
+            elif parsed.path == "/stores":
+                body = render_stores(gather_stores(), gather()["sources"])
             elif parsed.path == "/product":
                 q = parse_qs(parsed.query)
                 pid = (q.get("id") or [""])[0]
