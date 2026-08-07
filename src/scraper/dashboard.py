@@ -83,13 +83,17 @@ def gather(source: str | None = None) -> dict:
             f"FROM {S}.review r JOIN {S}.product p ON p.source=r.source AND p.product_id=r.product_id "
             f"WHERE 1=1{pw} "
             f"ORDER BY r.review_date DESC NULLS LAST LIMIT 12"), prm).all()
-        # Raw preview: ~20 products with every column (one variant each).
+        # Raw preview: ~20 products with every column (one variant each),
+        # joined to the store table for store name/city/state/zip.
         d["preview"] = c.execute(text(
             f"SELECT DISTINCT ON (p.product_id) p.source, p.product_id, p.name, p.brand, "
-            f"p.category, p.subcategory, v.size, v.price, v.store_id, v.stock, v.in_stock, "
+            f"p.category, p.subcategory, v.size, v.price, v.store_id, "
+            f"st.name AS store_name, st.city AS store_city, st.state AS store_state, "
+            f"st.zip AS store_zip, v.stock, v.in_stock, "
             f"p.avg_rating, p.review_count, p.is_new, p.attributes, p.ai_review_summary, p.url "
             f"FROM {S}.product p "
             f"LEFT JOIN {S}.product_variant v ON v.source=p.source AND v.product_id=p.product_id "
+            f"LEFT JOIN {S}.store st ON st.source=p.source AND st.store_id=v.store_id "
             f"WHERE 1=1{pw} ORDER BY p.product_id LIMIT 20"), prm).mappings().all()
         return d
 
@@ -132,8 +136,9 @@ def gather_stores() -> dict:
 
 
 _PREVIEW_COLS = ["source", "product_id", "name", "brand", "category", "subcategory",
-                 "size", "price", "store_id", "stock", "in_stock", "avg_rating",
-                 "review_count", "is_new", "attributes", "ai_review_summary", "url"]
+                 "size", "price", "store_id", "store_name", "store_city", "store_state",
+                 "store_zip", "stock", "in_stock", "avg_rating", "review_count",
+                 "is_new", "attributes", "ai_review_summary", "url"]
 
 
 def _cell(col, val) -> str:
