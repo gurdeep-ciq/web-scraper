@@ -96,6 +96,12 @@ def _attributes(product: dict) -> dict | None:
     abv = product.get("alcoholPercentage")
     if abv is not None:
         attrs["alcoholPercentage"] = abv
+    # Promotions: salesStrategy is {} for regular items but populates when a
+    # product is on a deal — keep whatever TW provides (shape varies), verbatim.
+    ss = product.get("salesStrategy")
+    if isinstance(ss, dict) and ss:
+        attrs["salesStrategy"] = ss
+        attrs["on_deal"] = True
     return attrs or None
 
 

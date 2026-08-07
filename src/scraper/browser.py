@@ -183,6 +183,17 @@ class TotalWineSession:
                 return False
             self._page.wait_for_timeout(2000)
 
+    def get_json(self, url: str) -> dict | None:
+        """Navigate to a JSON API endpoint (PX-gated to curl) and parse the
+        body — works because the browser context is PX-cleared."""
+        import json as _json
+        try:
+            self._page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            self._page.wait_for_timeout(600)
+            return _json.loads(self._page.evaluate("document.body.innerText"))
+        except Exception:
+            return None
+
     def rewarm(self, wait_ms: int | None = None) -> bool:
         """Recover a cold/blocked session: browse the homepage like a human and
         let the PX sensor re-run (patchright usually clears the invisible

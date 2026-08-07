@@ -33,7 +33,7 @@ from .db import (
 from .models import ScrapeRun, utcnow
 from .products import parse_product
 from .reviews import parse_reviews, parse_summary
-from .sitemaps import iter_product_urls, iter_stores
+from .sitemaps import iter_product_urls, iter_stores, store_api_url, store_from_json
 
 log = logging.getLogger("scraper.pipeline")
 
@@ -82,13 +82,41 @@ def warm(source: str = DEFAULT_SOURCE) -> dict:
         return {"warm": False}
 
 
-def sync_stores(source: str = DEFAULT_SOURCE) -> int:
-    """Load the store directory from the sitemap (no browser needed)."""
-    stores = _stamp([s.model_dump() for s in iter_stores()], source)
+def sync_stores(source: str = DEFAULT_SOURCE, resume: bool = True) -> dict:
+    """Load the store directory and enrich each store with full detail
+    (address, zip, phone, lat/long) from the store-locator API, fetched through
+    the warm PX-cleared browser (curl gets rate-limited after ~a few dozen).
+    Resumable: skips stores already enriched (zip present)."""
+    from .db import SessionLocal
+    from sqlalchemy import text as _text
+    from .config import config as _cfg
+
+    stores = list(iter_stores())               # 217 basic records (id/city/state)
+    with SessionLocal() as s:
+        done = {r[0] for r in s.execute(_text(
+            f"SELECT store_id FROM {_cfg.db_schema}.store "
+            f"WHERE source=:src AND zip IS NOT NULL"), {"src": source})} if resume else set()
+    # seed basic records so every store at least exists, then enrich
     with session_scope() as session:
-        n = upsert_stores(session, stores)
-    log.info("synced %d stores", n)
-    return n
+        upsert_stores(session, _stamp([s.model_dump() for s in stores], source))
+
+    todo = [s for s in stores if s.store_id not in done]
+    log.info("store enrichment: %d done, %d to fetch", len(done), len(todo))
+    enriched = 0
+    with TotalWineSession() as sess:
+        sess.warm_up(60)
+        for i, s in enumerate(todo, 1):
+            det = store_from_json(s.store_id, sess.get_json(store_api_url(s.store_id)))
+            if det:
+                with session_scope() as session:
+                    upsert_stores(session, _stamp([det.model_dump()], source))
+                enriched += 1
+            if i % 25 == 0:
+                log.info("store enrichment: %d/%d (%d ok)", i, len(todo), enriched)
+            time.sleep(0.5)
+    summary = {"total": len(stores), "newly_enriched": enriched, "already_done": len(done)}
+    log.info("sync-stores complete: %s", summary)
+    return summary
 
 
 def _persist_one(data: dict, source: str = DEFAULT_SOURCE) -> bool:

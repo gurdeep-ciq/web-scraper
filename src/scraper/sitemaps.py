@@ -24,6 +24,7 @@ from .fetch import DEFAULT_HEADERS
 from .models import StoreIn
 
 INDEX_URL = f"{config.base_url}/sitemap.xml"
+_STORE_API = config.base_url + "/search/api/store/storelocator/v1/store/{sid}"
 _LOC = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>")
 _PRODUCT_URL = re.compile(r"^https://www\.totalwine\.com/.+/p/\d+$")
 _STORE_URL = re.compile(r"^https://www\.totalwine\.com/store-info/([^/]+)/(\d+)$")
@@ -62,6 +63,44 @@ def iter_product_urls(
             count += 1
             if limit is not None and count >= limit:
                 return
+
+
+def store_api_url(store_id: str) -> str:
+    return _STORE_API.format(sid=store_id)
+
+
+def store_from_json(store_id: str, j: dict | None) -> StoreIn | None:
+    """Map the store-locator API JSON to a StoreIn. None if no usable data."""
+    if not isinstance(j, dict) or not j.get("city"):
+        return None
+    street = ", ".join(x for x in (j.get("address1"), j.get("address2")) if x)
+    try:
+        return StoreIn(
+            store_id=str(store_id),
+            name=j.get("name"),
+            address=street or None,
+            city=j.get("city"),
+            state=j.get("stateShort") or j.get("state"),
+            zip=str(j.get("zip") or "") or None,
+            phone=j.get("phoneFormatted") or j.get("phone"),
+            latitude=j.get("latitude"),
+            longitude=j.get("longitude"),
+        )
+    except Exception:
+        return None
+
+
+def fetch_store_detail(store_id: str) -> StoreIn | None:
+    """Store detail via plain curl. Works until PerimeterX rate-limits the IP
+    (~a few dozen calls); for the full set use the browser path in sync_stores."""
+    try:
+        r = cffi.get(store_api_url(store_id), headers=DEFAULT_HEADERS,
+                     impersonate="chrome124", timeout=30)
+        if r.status_code != 200:
+            return None
+        return store_from_json(store_id, r.json())
+    except Exception:
+        return None
 
 
 def iter_stores() -> Iterator[StoreIn]:

@@ -179,9 +179,10 @@ def upsert_stores(session: Session, rows: list[dict]) -> int:
     if not rows:
         return 0
     stmt = pg_insert(Store).values(rows)
+    cols = ("name", "address", "city", "state", "zip", "phone", "latitude", "longitude")
     stmt = stmt.on_conflict_do_update(
         index_elements=["source", "store_id"],
-        set_={c: stmt.excluded[c] for c in ("name", "city", "state", "zip")},
+        set_={c: stmt.excluded[c] for c in cols if c in rows[0]},
     )
     session.execute(stmt)
     return len(rows)

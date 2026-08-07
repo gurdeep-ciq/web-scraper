@@ -110,9 +110,13 @@ class Store(Base):
     source: Mapped[str] = mapped_column(String, primary_key=True)
     store_id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str | None] = mapped_column(String)
+    address: Mapped[str | None] = mapped_column(String)
     city: Mapped[str | None] = mapped_column(String)
     state: Mapped[str | None] = mapped_column(String)
     zip: Mapped[str | None] = mapped_column(String)
+    phone: Mapped[str | None] = mapped_column(String)
+    latitude: Mapped[float | None] = mapped_column(Float)
+    longitude: Mapped[float | None] = mapped_column(Float)
 
 
 class ProductStoreAvailability(Base):
@@ -208,6 +212,10 @@ class ReviewIn(BaseModel):
 class StoreIn(BaseModel):
     store_id: str
     name: str | None = None
+    address: str | None = None
     city: str | None = None
     state: str | None = None
     zip: str | None = None
+    phone: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
