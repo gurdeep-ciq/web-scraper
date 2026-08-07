@@ -61,6 +61,23 @@ def _first_price(product: dict) -> float | None:
     return None
 
 
+def _attributes(product: dict) -> dict | None:
+    """The PDP "Product Details" panel — a per-product set of attributes
+    (Country, Spirits Type, Taste, Varietal, Region, ...). Keys vary by product,
+    so store them as a flexible dict. Comes from itemCharacteristics, plus ABV.
+    """
+    attrs: dict = {}
+    for ch in product.get("itemCharacteristics") or []:
+        name = ch.get("attributeName")
+        val = ch.get("value")
+        if name and val is not None:
+            attrs[name] = val
+    abv = product.get("alcoholPercentage")
+    if abv is not None:
+        attrs["alcoholPercentage"] = abv
+    return attrs or None
+
+
 def _in_stock(product: dict) -> bool | None:
     if product.get("unavailableAtStore") is True:
         return False
@@ -98,6 +115,7 @@ def parse_product(
             ai_review_summary=ai_review_summary or None,
             avg_rating=payload.get("customerAverageRating"),
             review_count=payload.get("customerReviewsCount"),
+            attributes=_attributes(payload),
         )
     except Exception:
         return None, None

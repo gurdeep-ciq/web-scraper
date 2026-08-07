@@ -83,7 +83,7 @@ def gather_product(source: str, pid: str) -> dict | None:
     with engine.connect() as c:
         prod = c.execute(text(
             f"SELECT source, product_id, name, brand, category, subcategory, url, "
-            f"avg_rating, review_count, ai_review_summary FROM {S}.product "
+            f"avg_rating, review_count, ai_review_summary, attributes FROM {S}.product "
             f"WHERE source = :s AND product_id = :p"),
             {"s": source, "p": pid}).mappings().first()
         if not prod:
@@ -251,6 +251,11 @@ def render_product(pv: dict) -> str:
         or '<div class="sub">no reviews stored for this product</div>'
     summ = (f'<section><h2>AI review summary</h2><div class="rb">'
             f'{html.escape(p["ai_review_summary"])}</div></section>') if p["ai_review_summary"] else ""
+    attrs = p.get("attributes") or {}
+    details = ("<table>" + "".join(
+        f"<tr><th style='width:180px'>{html.escape(str(k))}</th>"
+        f"<td>{html.escape(str(v))}</td></tr>" for k, v in attrs.items()) + "</table>"
+    ) if attrs else '<div class="sub">no product details</div>'
     src = (f'<a href="{html.escape(p["url"])}" target="_blank">view on totalwine.com ↗</a>'
            if p["url"] else "")
 
@@ -280,6 +285,7 @@ def render_product(pv: dict) -> str:
 <main>
   <section><h2>Sizes &amp; price</h2><table>
     <tr><th>size</th><th>price</th><th>stock</th></tr>{variants}</table></section>
+  <section><h2>Product details</h2>{details}</section>
   {summ}
   <section><h2>Reviews ({len(pv['reviews'])})</h2>{reviews}</section>
 </main></body></html>"""

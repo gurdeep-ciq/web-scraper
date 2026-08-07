@@ -29,6 +29,7 @@ from sqlalchemy import (
     Text,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from .config import config
@@ -59,6 +60,9 @@ class Product(Base):
     ai_review_summary: Mapped[str | None] = mapped_column(Text)
     avg_rating: Mapped[float | None] = mapped_column(Float)
     review_count: Mapped[int | None] = mapped_column(Integer)
+    # Per-product "Product Details" attributes (Country, Spirits Type, Taste,
+    # Varietal, Region, ABV, ...) — keys vary by product, so keep them flexible.
+    attributes: Mapped[dict | None] = mapped_column(JSONB)
     first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
@@ -167,6 +171,7 @@ class ProductIn(BaseModel):
     ai_review_summary: str | None = None
     avg_rating: float | None = Field(default=None, ge=0, le=5)
     review_count: int | None = Field(default=None, ge=0)
+    attributes: dict | None = None
 
     @field_validator("name")
     @classmethod
