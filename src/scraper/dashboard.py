@@ -49,6 +49,12 @@ def gather(source: str | None = None) -> dict:
         d["priced"] = sc(f"SELECT count(*) FROM {S}.product_variant WHERE price IS NOT NULL{p_and}")
         d["avg_price"] = sc(f"SELECT round(avg(price)::numeric,2) FROM {S}.product_variant WHERE price IS NOT NULL{p_and}")
         d["with_rating"] = sc(f"SELECT count(*) FROM {S}.product WHERE review_count > 0{p_and}")
+        d["new"] = sc(f"SELECT count(*) FROM {S}.product WHERE is_new = true{p_and}")
+        d["on_deal"] = sc(f"SELECT count(*) FROM {S}.product "
+                          f"WHERE attributes->>'on_deal' = 'true'{p_and}")
+        d["subcats"] = c.execute(text(
+            f"SELECT coalesce(subcategory,'(none)'), count(*) n FROM {S}.product "
+            f"WHERE subcategory IS NOT NULL{p_and} GROUP BY 1 ORDER BY n DESC LIMIT 12"), prm).all()
         # sources list is always global (drives the tab bar)
         d["sources"] = c.execute(text(
             f"SELECT source, count(*) n FROM {S}.product GROUP BY 1 ORDER BY n DESC")).all()
@@ -83,13 +89,13 @@ def gather_product(source: str, pid: str) -> dict | None:
     with engine.connect() as c:
         prod = c.execute(text(
             f"SELECT source, product_id, name, brand, category, subcategory, url, "
-            f"avg_rating, review_count, ai_review_summary, attributes FROM {S}.product "
+            f"avg_rating, review_count, ai_review_summary, attributes, is_new FROM {S}.product "
             f"WHERE source = :s AND product_id = :p"),
             {"s": source, "p": pid}).mappings().first()
         if not prod:
             return None
         variants = c.execute(text(
-            f"SELECT size, price, in_stock, store_id FROM {S}.product_variant "
+            f"SELECT size, price, in_stock, stock, store_id FROM {S}.product_variant "
             f"WHERE source = :s AND product_id = :p ORDER BY price NULLS LAST"),
             {"s": source, "p": pid}).all()
         reviews = c.execute(text(
@@ -175,10 +181,14 @@ def render(d: dict) -> str:
             ("Products", d["products"]), ("Variants", d["variants"]),
             ("Reviews", d["reviews"]), ("Stores", d["stores"]),
             ("Priced %", f"{cov:.0f}%"), ("Avg price", f"${d['avg_price']}"),
-            ("With reviews", d["with_rating"]),
+            ("With reviews", d["with_rating"]), ("On deal", d["on_deal"]),
+            ("New", d["new"]),
         ]
     )
     cats = "".join(_bar(lbl, n, cat_max) for lbl, n in d["categories"])
+    sub_max = max([n for _, n in d["subcats"]], default=1)
+    subs = "".join(_bar(lbl, n, sub_max, "#3b82f6") for lbl, n in d["subcats"]) \
+        or '<div class="sub">no data yet</div>'
     rats = "".join(_bar(f"{b}★", n, rat_max, "#f59e0b") for b, n in d["ratings"])
     src_max = max([n for _, n in d["sources"]], default=1)
     srcs = "".join(_bar(s, n, src_max, "#10b981") for s, n in d["sources"]) \
@@ -246,6 +256,7 @@ def render(d: dict) -> str:
   <div class="cards">{cards}</div>
   {"" if active else f'<section><h2>Products by source</h2>{srcs}</section>'}
   <section><h2>Products by category</h2>{cats or '<div class="sub">no data yet</div>'}</section>
+  <section><h2>Products by subcategory</h2>{subs}</section>
   <section><h2>Rating distribution</h2>{rats or '<div class="sub">no ratings yet</div>'}</section>
   <section><h2>Top-reviewed products <span class="sub">(click a name for its reviews)</span></h2>
     <table><tr><th>name</th><th>category</th><th>size</th><th>price</th><th>rating</th><th>reviews</th></tr>{top}</table>
@@ -320,9 +331,10 @@ def render_product(pv: dict) -> str:
         f"<tr><td>{html.escape(v.size or '')}</td>"
         f"<td>{('$'+str(v.price)) if v.price is not None else '—'}</td>"
         f"<td>{'in stock' if v.in_stock else ('out' if v.in_stock is False else '?')}</td>"
+        f"<td>{v.stock if v.stock is not None else ''}</td>"
         f"<td>{html.escape(v.store_id or '')}</td></tr>"
         for v in pv["variants"]
-    ) or "<tr><td colspan=4 class='sub'>no variants</td></tr>"
+    ) or "<tr><td colspan=5 class='sub'>no variants</td></tr>"
     reviews = "".join(_review_card(r) for r in pv["reviews"]) \
         or '<div class="sub">no reviews stored for this product</div>'
     summ = (f'<section><h2>AI review summary</h2><div class="rb">'
@@ -334,6 +346,11 @@ def render_product(pv: dict) -> str:
     ) if attrs else '<div class="sub">no product details</div>'
     src = (f'<a href="{html.escape(p["url"])}" target="_blank">view on totalwine.com ↗</a>'
            if p["url"] else "")
+    badges = ""
+    if p.get("is_new"):
+        badges += ' <span class="badge new">NEW</span>'
+    if (attrs.get("on_deal") is True) or (str(attrs.get("on_deal")).lower() == "true"):
+        badges += ' <span class="badge deal">DEAL</span>'
 
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <title>{html.escape(p['name'] or 'product')} — reviews</title>
@@ -350,17 +367,19 @@ def render_product(pv: dict) -> str:
   .stars {{ color:#f59e0b; letter-spacing:1px; }} .by {{ color:#8a8a95; }}
   .rev {{ border-bottom:1px solid #26262e; padding:12px 0; }} .rev:last-child {{ border-bottom:0; }}
   .rh {{ font-size:13px; margin-bottom:4px; }} .rb {{ font-size:13px; color:#c7c7d0; line-height:1.5; }}
+  .badge {{ font-size:11px; font-weight:700; padding:2px 8px; border-radius:999px; vertical-align:middle; }}
+  .badge.new {{ background:#2563eb; color:#fff; }} .badge.deal {{ background:#dc2626; color:#fff; }}
 </style></head><body>
 <header>
   <div class="back"><a href="/">← dashboard</a></div>
-  <h1>{html.escape(p['name'] or '')}</h1>
+  <h1>{html.escape(p['name'] or '')}{badges}</h1>
   <div class="sub">{html.escape(p['brand'] or '')} &middot; {html.escape(p['category'] or '')}
     {'/ ' + html.escape(p['subcategory']) if p['subcategory'] else ''} &middot;
     {_stars(p['avg_rating'])} {p['avg_rating'] or ''} ({p['review_count'] or 0} reviews) &middot; {src}</div>
 </header>
 <main>
   <section><h2>Sizes &amp; price</h2><table>
-    <tr><th>size</th><th>price</th><th>stock</th><th>store</th></tr>{variants}</table></section>
+    <tr><th>size</th><th>price</th><th>stock</th><th>qty</th><th>store</th></tr>{variants}</table></section>
   <section><h2>Product details</h2>{details}</section>
   {summ}
   <section><h2>Reviews ({len(pv['reviews'])})</h2>{reviews}</section>
